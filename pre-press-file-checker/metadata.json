@@ -1,0 +1,6 @@
+{
+  "name": "Pre-Press File Checker",
+  "description": "High-fidelity automated pre-press file validation dashboard for print products including flyers, posters, stickers, and banners, featuring resolution (DPI) calculation, aspect ratio matching, and layout correction.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

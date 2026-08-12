@@ -1,0 +1,12 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-brand-red: #e31c24;
+  --color-brand-red-dark: #b8141a;
+  --color-brand-black: #111111;
+  --color-brand-charcoal: #1f1f1f;
+  --color-brand-dark: #0a0a0a;
+}
