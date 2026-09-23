@@ -107,6 +107,7 @@ const calculateGridConfig = (
 };
 
 export default function App() {
+  const isBackofficeRoute = window.location.pathname === '/backoffice' || window.location.pathname.startsWith('/backoffice/');
   const [selectedProduct, setSelectedProduct] = useState<PrintProduct>(STANDARD_PRODUCTS[0]);
   const [customWidth, setCustomWidth] = useState<number>(STANDARD_PRODUCTS[0].widthMm);
   const [customHeight, setCustomHeight] = useState<number>(STANDARD_PRODUCTS[0].heightMm);
@@ -145,7 +146,7 @@ export default function App() {
   const [prototypeOverride, setPrototypeOverride] = useState<PrototypeStateOverride>('auto');
 
   // New Full-Stack Backoffice & Customer Details states
-  const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin'>('landing');
+  const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin'>(isBackofficeRoute ? 'admin' : 'client');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
     try {
       return sessionStorage.getItem('fd_admin_authed') === 'true';
@@ -1282,6 +1283,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!isBackofficeRoute && activePortal === 'admin') {
+      setActivePortal('client');
+    }
+  }, [activePortal, isBackofficeRoute]);
+
+  useEffect(() => {
     if (isAdminAuthenticated) {
       fetchAdminOrders();
       fetchAdminStaff();
@@ -2056,27 +2063,12 @@ export default function App() {
       {/* SaaS Premium Header bar */}
       <header className="border-b border-slate-200 bg-white sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
-          <div 
-            onClick={() => setActivePortal('landing')}
-            className="cursor-pointer group"
-            title="Klik hier om terug te gaan naar het Hoofdmenu"
-          >
+          <div className="group" title="FD Printing klantportaal">
             <FDLogo />
           </div>
  
           {/* Premium Portal Switching Tabs */}
           <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50 max-w-md">
-            <button
-              onClick={() => setActivePortal('landing')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                activePortal === 'landing'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Grid className="w-3.5 h-3.5 text-slate-500" />
-              <span className="hidden sm:inline">Hoofdmenu</span>
-            </button>
             <button
               onClick={() => setActivePortal('client')}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
@@ -2088,22 +2080,24 @@ export default function App() {
               <User className="w-3.5 h-3.5 text-brand-red" />
               <span>Klantportaal</span>
             </button>
-            <button
-              onClick={() => {
-                setActivePortal('admin');
-                if (isAdminAuthenticated) {
-                  fetchAdminOrders();
-                }
-              }}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                activePortal === 'admin'
-                  ? 'bg-slate-800 text-white shadow-xs'
-                  : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <Database className="w-3.5 h-3.5 text-slate-500" />
-              <span>Beheerders</span>
-            </button>
+            {isBackofficeRoute && (
+              <button
+                onClick={() => {
+                  setActivePortal('admin');
+                  if (isAdminAuthenticated) {
+                    fetchAdminOrders();
+                  }
+                }}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  activePortal === 'admin'
+                    ? 'bg-slate-800 text-white shadow-xs'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <Database className="w-3.5 h-3.5 text-slate-500" />
+                <span>Beheerders</span>
+              </button>
+            )}
           </div>
  
           <div className="flex items-center gap-2">
