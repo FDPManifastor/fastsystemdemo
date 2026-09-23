@@ -1,6 +1,0 @@
-node_modules/
-pre-press-file-checker/node_modules/
-pre-press-file-checker/dist/
-.env
-.env.*
-!.env.example

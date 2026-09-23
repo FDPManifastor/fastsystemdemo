@@ -5,7 +5,7 @@ import { createServer as createViteServer } from "vite";
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = 3000;
 
   // Let Express parse JSON up to 150MB to easily accommodate multiple high-res design photos/PDFs
   app.use(express.json({ limit: "150mb" }));
