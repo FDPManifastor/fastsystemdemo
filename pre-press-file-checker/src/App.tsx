@@ -2097,16 +2097,16 @@ export default function App() {
       {/* SaaS Premium Header bar */}
       <header className="border-b border-slate-200 bg-white sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
-          <div 
-            onClick={() => setActivePortal('landing')}
-            className="cursor-pointer group"
-            title="Klik hier om terug te gaan naar het Hoofdmenu"
+          <div
+            onClick={activePortal === 'client' ? undefined : () => setActivePortal('landing')}
+            className={activePortal === 'client' ? 'group' : 'cursor-pointer group'}
+            title={activePortal === 'client' ? undefined : 'Klik hier om terug te gaan naar het Hoofdmenu'}
           >
             <FDLogo />
           </div>
  
           {/* Premium Portal Switching Tabs */}
-          <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50 max-w-md">
+          {activePortal !== 'client' && <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50 max-w-md">
             <button
               onClick={() => setActivePortal('landing')}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
@@ -2145,7 +2145,7 @@ export default function App() {
               <Database className="w-3.5 h-3.5 text-slate-500" />
               <span>Beheerders</span>
             </button>
-          </div>
+          </div>}
  
           <div className="flex items-center gap-2">
             <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-red-50 text-brand-red border border-red-100">
