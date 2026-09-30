@@ -2020,6 +2020,47 @@ export default function App() {
                 </div>
               </button>
             </motion.div>
+
+            {/* 3. ALL COMPUTERS PORTAL */}
+            <motion.div
+              whileHover={{ scale: 1.02, y: -4 }}
+              whileTap={{ scale: 0.98 }}
+              className="h-full"
+            >
+              <a
+                href="http://192.168.1.20:3000/upload.html"
+                target="_blank"
+                rel="noreferrer"
+                className="w-full h-full text-left bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-emerald-400/60 rounded-3xl p-8 flex flex-col justify-between gap-6 cursor-pointer transition-all duration-300 shadow-xl group hover:shadow-emerald-400/5 relative overflow-hidden block"
+              >
+                <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-400/5 rounded-full blur-2xl group-hover:bg-emerald-400/10 transition-colors"></div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="p-3 bg-emerald-400/10 text-emerald-300 border border-emerald-400/25 rounded-2xl">
+                      <ExternalLink className="w-6 h-6" />
+                    </div>
+                    <span className="text-[10px] uppercase font-bold tracking-widest text-emerald-300 bg-emerald-400/10 border border-emerald-400/20 px-2.5 py-1 rounded-full">
+                      Computer portal
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <h3 className="font-extrabold text-lg sm:text-xl text-white group-hover:text-emerald-300 transition-colors">
+                      All Computers
+                    </h3>
+                    <p className="text-xs text-slate-400 leading-relaxed font-sans">
+                      Open de centrale uploadomgeving voor alle computers op het netwerk.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-4 border-t border-slate-800/80 w-full text-xs font-bold text-emerald-300 group-hover:text-emerald-200 transition-colors">
+                  <span>Open uploadomgeving</span>
+                  <ExternalLink className="w-4 h-4 transform group-hover:translate-x-1 transition-transform" />
+                </div>
+              </a>
+            </motion.div>
           </div>
         </main>
 
