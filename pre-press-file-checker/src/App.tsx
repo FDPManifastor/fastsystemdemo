@@ -145,7 +145,13 @@ export default function App() {
   const [prototypeOverride, setPrototypeOverride] = useState<PrototypeStateOverride>('auto');
 
   // New Full-Stack Backoffice & Customer Details states
-  const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin'>('landing');
+  const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin'>(() =>
+    window.location.pathname.replace(/\/+$/, '') === '/klantportal' ? 'client' : 'landing'
+  );
+  const enterClientPortal = () => {
+    window.history.replaceState({}, '', '/klantportal');
+    setActivePortal('client');
+  };
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
     try {
       return sessionStorage.getItem('fd_admin_authed') === 'true';
@@ -1944,7 +1950,7 @@ export default function App() {
             >
               <button
                 type="button"
-                onClick={() => setActivePortal('client')}
+                onClick={enterClientPortal}
                 className="w-full h-full text-left bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-brand-red/60 rounded-3xl p-8 flex flex-col justify-between gap-6 cursor-pointer transition-all duration-300 shadow-xl group hover:shadow-brand-red/5 relative overflow-hidden"
               >
                 <div className="absolute top-0 right-0 w-32 h-32 bg-brand-red/5 rounded-full blur-2xl group-hover:bg-brand-red/10 transition-colors"></div>
