@@ -6,6 +6,10 @@ import { createServer as createViteServer } from "vite";
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  const isAdminAuthorized = (req: express.Request) => {
+    const configuredPassword = process.env.ADMIN_PASSWORD;
+    return Boolean(configuredPassword && req.headers.authorization === configuredPassword);
+  };
 
   // Let Express parse JSON up to 150MB to easily accommodate multiple high-res design photos/PDFs
   app.use(express.json({ limit: "150mb" }));
@@ -66,16 +70,14 @@ async function startServer() {
 
   // API Staff Routes (authorized with admin password)
   app.get("/api/staff", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== "FD2026") {
+    if (!isAdminAuthorized(req)) {
       return res.status(401).json({ error: "Ongeautoriseerd. Wachtwoord is onjuist." });
     }
     res.json(loadStaff());
   });
 
   app.post("/api/staff", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== "FD2026") {
+    if (!isAdminAuthorized(req)) {
       return res.status(401).json({ error: "Ongeautoriseerd. Wachtwoord is onjuist." });
     }
     const { name, role } = req.body;
@@ -94,8 +96,7 @@ async function startServer() {
   });
 
   app.delete("/api/staff/:id", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== "FD2026") {
+    if (!isAdminAuthorized(req)) {
       return res.status(401).json({ error: "Ongeautoriseerd. Wachtwoord is onjuist." });
     }
     const staff = loadStaff();
@@ -106,8 +107,7 @@ async function startServer() {
 
   // API Route: Get all orders (admin password credentials authorization)
   app.get("/api/orders", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== "FD2026") {
+    if (!isAdminAuthorized(req)) {
       return res.status(401).json({ error: "Ongeautoriseerd. Wachtwoord is onjuist." });
     }
     const orders = loadOrders();
@@ -155,8 +155,7 @@ async function startServer() {
 
   // API Route: Update an order status / notes (admin authorization)
   app.put("/api/orders/:id", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== "FD2026") {
+    if (!isAdminAuthorized(req)) {
       return res.status(401).json({ error: "Ongeautoriseerd. Wachtwoord is onjuist." });
     }
 
@@ -236,8 +235,7 @@ async function startServer() {
 
   // API Route: Delete a validated order
   app.delete("/api/orders/:id", (req, res) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== "FD2026") {
+    if (!isAdminAuthorized(req)) {
       return res.status(401).json({ error: "Ongeautoriseerd. Wachtwoord is onjuist." });
     }
     const orderId = req.params.id;

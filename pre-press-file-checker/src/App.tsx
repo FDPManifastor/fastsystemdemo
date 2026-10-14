@@ -72,6 +72,14 @@ const STANDARD_PRODUCTS: PrintProduct[] = [
   { id: 'rollup-banner', name: 'Rollup Banner', category: 'Banner', widthMm: 850, heightMm: 2000, iconName: 'file-text' },
 ];
 
+const getStoredAdminPassword = () => {
+  try {
+    return sessionStorage.getItem('fd_admin_password') || '';
+  } catch {
+    return '';
+  }
+};
+
 const calculateGridConfig = (
   usableW: number,
   usableH: number,
@@ -159,7 +167,7 @@ export default function App() {
   };
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
     try {
-      return sessionStorage.getItem('fd_admin_authed') === 'true';
+      return sessionStorage.getItem('fd_admin_authed') === 'true' && Boolean(sessionStorage.getItem('fd_admin_password'));
     } catch (e) {
       return false;
     }
@@ -582,7 +590,7 @@ export default function App() {
     try {
       const response = await fetch('/api/orders', {
         headers: {
-          'Authorization': 'FD2026'
+          'Authorization': getStoredAdminPassword()
         }
       });
       if (response.ok) {
@@ -628,7 +636,7 @@ export default function App() {
     try {
       const response = await fetch('/api/staff', {
         headers: {
-          'Authorization': 'FD2026'
+          'Authorization': getStoredAdminPassword()
         }
       });
       if (response.ok) {
@@ -654,7 +662,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'FD2026'
+          'Authorization': getStoredAdminPassword()
         },
         body: JSON.stringify({ name: staffNameInput, role: staffRoleInput })
       });
@@ -677,7 +685,7 @@ export default function App() {
       const response = await fetch(`/api/staff/${id}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': 'FD2026'
+          'Authorization': getStoredAdminPassword()
         }
       });
       if (response.ok) {
@@ -694,7 +702,7 @@ export default function App() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'FD2026'
+          'Authorization': getStoredAdminPassword()
         },
         body: JSON.stringify({ assignedStaff: staffName })
       });
@@ -712,7 +720,7 @@ export default function App() {
       const response = await fetch(`/api/orders/${orderId}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': 'FD2026'
+          'Authorization': getStoredAdminPassword()
         }
       });
       if (response.ok) {
@@ -727,18 +735,25 @@ export default function App() {
     }
   };
 
-  const handleAdminLogin = (e?: React.FormEvent) => {
+  const handleAdminLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (adminPasswordInput === 'FD2026') {
+    setAdminAuthError(null);
+    try {
+      const response = await fetch('/api/orders', {
+        headers: { 'Authorization': adminPasswordInput }
+      });
+      if (!response.ok) {
+        setAdminAuthError('Onjuist wachtwoord.');
+        return;
+      }
+      sessionStorage.setItem('fd_admin_password', adminPasswordInput);
+      sessionStorage.setItem('fd_admin_authed', 'true');
       setIsAdminAuthenticated(true);
-      setAdminAuthError(null);
-      try {
-        sessionStorage.setItem('fd_admin_authed', 'true');
-      } catch (e) {}
+      setAdminPasswordInput('');
       fetchAdminOrders();
       fetchAdminStaff();
-    } else {
-      setAdminAuthError('Onjuist wachtwoord.');
+    } catch {
+      setAdminAuthError('De server is niet bereikbaar. Probeer het opnieuw.');
     }
   };
 
@@ -2594,6 +2609,7 @@ export default function App() {
                   onClick={() => {
                     setIsAdminAuthenticated(false);
                     sessionStorage.removeItem('fd_admin_authed');
+                    sessionStorage.removeItem('fd_admin_password');
                   }}
                   className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg border border-slate-200 transition-colors cursor-pointer"
                 >
