@@ -146,7 +146,11 @@ export default function App() {
 
   // New Full-Stack Backoffice & Customer Details states
   const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin'>(() =>
-    window.location.pathname.replace(/\/+$/, '') === '/klantportal' ? 'client' : 'landing'
+    window.location.pathname.replace(/\/+$/, '') === '/orders'
+      ? 'admin'
+      : window.location.pathname.replace(/\/+$/, '') === '/klantportal'
+        ? 'client'
+        : 'landing'
   );
   const enterClientPortal = () => {
     window.history.replaceState({}, '', '/klantportal');
