@@ -2034,7 +2034,7 @@ export default function App() {
               className="h-full"
             >
               <a
-                href="http://192.168.1.20:3000/upload.html"
+                href="https://fd-kiosk-print-system.onrender.com/"
                 target="_blank"
                 rel="noreferrer"
                 className="w-full h-full text-left bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-emerald-400/60 rounded-3xl p-8 flex flex-col justify-between gap-6 cursor-pointer transition-all duration-300 shadow-xl group hover:shadow-emerald-400/5 relative overflow-hidden block"
