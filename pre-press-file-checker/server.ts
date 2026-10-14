@@ -253,6 +253,15 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: "spa",
     });
+    app.get("/orders", async (req, res, next) => {
+      try {
+        const template = fs.readFileSync(path.join(process.cwd(), "index.html"), "utf-8");
+        const html = await vite.transformIndexHtml(req.originalUrl, template);
+        res.status(200).type("html").send(html);
+      } catch (error) {
+        next(error);
+      }
+    });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
