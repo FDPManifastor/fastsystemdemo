@@ -107,6 +107,7 @@ const calculateGridConfig = (
 };
 
 export default function App() {
+  const isOrdersRoute = window.location.pathname.replace(/\/+$/, '') === '/orders';
   const [selectedProduct, setSelectedProduct] = useState<PrintProduct>(STANDARD_PRODUCTS[0]);
   const [customWidth, setCustomWidth] = useState<number>(STANDARD_PRODUCTS[0].widthMm);
   const [customHeight, setCustomHeight] = useState<number>(STANDARD_PRODUCTS[0].heightMm);
@@ -146,7 +147,7 @@ export default function App() {
 
   // New Full-Stack Backoffice & Customer Details states
   const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin'>(() =>
-    window.location.pathname.replace(/\/+$/, '') === '/orders'
+    isOrdersRoute
       ? 'admin'
       : window.location.pathname.replace(/\/+$/, '') === '/klantportal'
         ? 'client'
@@ -737,7 +738,7 @@ export default function App() {
       fetchAdminOrders();
       fetchAdminStaff();
     } else {
-      setAdminAuthError('Onjuist wachtwoord. Gebruik het wachtwoord "FD2026".');
+      setAdminAuthError('Onjuist wachtwoord.');
     }
   };
 
@@ -2108,15 +2109,15 @@ export default function App() {
       <header className="border-b border-slate-200 bg-white sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
           <div
-            onClick={activePortal === 'client' ? undefined : () => setActivePortal('landing')}
-            className={activePortal === 'client' ? 'group' : 'cursor-pointer group'}
-            title={activePortal === 'client' ? undefined : 'Klik hier om terug te gaan naar het Hoofdmenu'}
+            onClick={activePortal === 'client' || isOrdersRoute ? undefined : () => setActivePortal('landing')}
+            className={activePortal === 'client' || isOrdersRoute ? 'group' : 'cursor-pointer group'}
+            title={activePortal === 'client' || isOrdersRoute ? undefined : 'Klik hier om terug te gaan naar het Hoofdmenu'}
           >
             <FDLogo />
           </div>
  
           {/* Premium Portal Switching Tabs */}
-          {activePortal !== 'client' && <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50 max-w-md">
+          {activePortal !== 'client' && !isOrdersRoute && <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50 max-w-md">
             <button
               onClick={() => setActivePortal('landing')}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
@@ -2162,9 +2163,9 @@ export default function App() {
               <span className="w-1.5 h-1.5 rounded-full bg-brand-red animate-ping"></span>
               FOGRA39 Compliant
             </span>
-            <div className="text-xs text-slate-400 font-medium hidden md:block font-mono">
+            {!isOrdersRoute && <div className="text-xs text-slate-400 font-medium hidden md:block font-mono">
               admin@fdprinting.nl
-            </div>
+            </div>}
           </div>
         </div>
       </header>
@@ -2643,9 +2644,6 @@ export default function App() {
                       Verifieer Access Code
                     </button>
                   </form>
-                  <p className="text-[10px] text-slate-400">
-                     Tip: het beheerderswachtwoord is <span className="font-mono font-bold select-all bg-slate-50 px-1 py-0.5 rounded border border-slate-200">FD2026</span>
-                  </p>
                 </div>
               </motion.div>
             ) : (
