@@ -59,8 +59,8 @@ export default function UploadDropzone({
     }
 
     const fileSizeMb = file.size / (1024 * 1024);
-    if (fileSizeMb > 50) {
-      setErrorMessage('Bestandsgrootte overschrijdt de limiet van 50MB. Probeer een gecomprimeerd formaat.');
+    if (fileSizeMb > 4) {
+      setErrorMessage('Bestandsgrootte overschrijdt de limiet van 4MB. Probeer een gecomprimeerd formaat.');
       return;
     }
 
@@ -265,7 +265,7 @@ export default function UploadDropzone({
                   </span>
                 </p>
                 <p className="text-xs text-slate-400 mt-2 font-sans">
-                  Formaten: <strong className="text-slate-600">PDF, JPG, PNG</strong> &bull; Maximaal <strong className="text-slate-600">50MB</strong>
+                  Formaten: <strong className="text-slate-600">PDF, JPG, PNG</strong> &bull; Maximaal <strong className="text-slate-600">4MB</strong>
                 </p>
               </div>
             ) : (

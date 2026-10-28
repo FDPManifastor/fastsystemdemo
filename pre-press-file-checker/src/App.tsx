@@ -1,11 +1,7 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
 import { 
   CheckCircle, 
   Printer, 
@@ -38,7 +34,8 @@ import {
   Scissors,
   Grid,
   Users,
-  PlusCircle
+  PlusCircle,
+  ClipboardList
 } from 'lucide-react';
 
 import { PrintProduct, FileAnalysis, FitMode, PrototypeStateOverride, StickerShape } from './types';
@@ -48,6 +45,33 @@ import FeedbackPanel from './components/FeedbackPanel';
 import LiveFilePreview from './components/LiveFilePreview';
 import { FDLogo } from './components/FDLogo';
 import { renderPdfFile } from './utils/pdfLoader';
+import OrderTicketWorkspace from './components/OrderTicketWorkspace';
+
+function TrackingQr({ value, size = 150 }: { value: string; size?: number }) {
+  const [src, setSrc] = useState<string>('');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    QRCode.toDataURL(value, {
+      width: size,
+      margin: 1,
+      errorCorrectionLevel: 'M'
+    })
+      .then((dataUrl) => {
+        if (!cancelled) setSrc(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setSrc('');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [value, size]);
+
+  return <img src={src || undefined} alt="Tracking QR" className="w-full h-full object-contain" />;
+}
 
 const STANDARD_PRODUCTS: PrintProduct[] = [
   // Flyers
@@ -71,14 +95,6 @@ const STANDARD_PRODUCTS: PrintProduct[] = [
   // Banners
   { id: 'rollup-banner', name: 'Rollup Banner', category: 'Banner', widthMm: 850, heightMm: 2000, iconName: 'file-text' },
 ];
-
-const getStoredAdminPassword = () => {
-  try {
-    return sessionStorage.getItem('fd_admin_password') || '';
-  } catch {
-    return '';
-  }
-};
 
 const calculateGridConfig = (
   usableW: number,
@@ -154,31 +170,29 @@ export default function App() {
   const [prototypeOverride, setPrototypeOverride] = useState<PrototypeStateOverride>('auto');
 
   // New Full-Stack Backoffice & Customer Details states
-  const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin'>(() =>
+  const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin'>('landing');
+  useEffect(() => {
+    setActivePortal(() =>
     isOrdersRoute
       ? 'admin'
       : window.location.pathname.replace(/\/+$/, '') === '/klantportal'
         ? 'client'
         : 'landing'
-  );
+    );
+  }, [isOrdersRoute]);
   const enterClientPortal = () => {
     window.history.replaceState({}, '', '/klantportal');
     setActivePortal('client');
   };
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
-    try {
-      return sessionStorage.getItem('fd_admin_authed') === 'true' && Boolean(sessionStorage.getItem('fd_admin_password'));
-    } catch (e) {
-      return false;
-    }
-  });
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(false);
   const [adminPasswordInput, setAdminPasswordInput] = useState<string>('');
   const [adminAuthError, setAdminAuthError] = useState<string | null>(null);
+  const [trackingQrCode, setTrackingQrCode] = useState<string>('');
   const [orders, setOrders] = useState<any[]>([]);
   const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [adminCategoryFilter, setAdminCategoryFilter] = useState<string>('All');
-  const [adminSubTab, setAdminSubTab] = useState<'files' | 'orders' | 'staff' | 'create_order'>('files');
+  const [adminSubTab, setAdminSubTab] = useState<'files' | 'orders' | 'staff' | 'create_order' | 'ticket'>('files');
   const [selectedFileKeys, setSelectedFileKeys] = useState<string[]>([]);
   const [previewFile, setPreviewFile] = useState<any | null>(null);
 
@@ -332,7 +346,11 @@ export default function App() {
   const [isClientFormOpen, setIsClientFormOpen] = useState<boolean>(false);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState<boolean>(false);
   const [submittedOrderId, setSubmittedOrderId] = useState<string | null>(null);
+  const [submittedTrackingToken, setSubmittedTrackingToken] = useState<string | null>(null);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
+
+  const isClientPortal = activePortal === 'client';
+  const isLandingPortal = activePortal === 'landing';
   
   // Form fields
   const [clientName, setClientName] = useState<string>('');
@@ -588,11 +606,7 @@ export default function App() {
     setIsLoadingOrders(true);
     setAdminAuthError(null);
     try {
-      const response = await fetch('/api/orders', {
-        headers: {
-          'Authorization': getStoredAdminPassword()
-        }
-      });
+      const response = await fetch('/api/orders', { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
         setOrders(data);
@@ -601,17 +615,8 @@ export default function App() {
         setAdminAuthError(errorData.error || 'Kon de orders niet inladen.');
       }
     } catch (err) {
-      console.warn('Kan API niet bereiken, laden van fallback:', err);
-      try {
-        const cached = localStorage.getItem('fd_orders_fallback');
-        if (cached) {
-          setOrders(JSON.parse(cached));
-        } else {
-          setOrders([]);
-        }
-      } catch (inner) {
-        setOrders([]);
-      }
+      console.warn('Kan API niet bereiken:', err);
+      setOrders([]);
     } finally {
       setIsLoadingOrders(false);
     }
@@ -634,11 +639,7 @@ export default function App() {
     setIsLoadingStaff(true);
     setStaffError(null);
     try {
-      const response = await fetch('/api/staff', {
-        headers: {
-          'Authorization': getStoredAdminPassword()
-        }
-      });
+      const response = await fetch('/api/staff', { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
         setStaffList(data);
@@ -661,9 +662,9 @@ export default function App() {
       const response = await fetch('/api/staff', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': getStoredAdminPassword()
+          'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({ name: staffNameInput, role: staffRoleInput })
       });
       if (response.ok) {
@@ -684,9 +685,7 @@ export default function App() {
     try {
       const response = await fetch(`/api/staff/${id}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': getStoredAdminPassword()
-        }
+        credentials: 'include'
       });
       if (response.ok) {
         fetchAdminStaff();
@@ -701,9 +700,9 @@ export default function App() {
       const response = await fetch(`/api/orders/${orderId}`, {
         method: 'PUT',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': getStoredAdminPassword()
+          'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({ assignedStaff: staffName })
       });
       if (response.ok) {
@@ -719,9 +718,7 @@ export default function App() {
     try {
       const response = await fetch(`/api/orders/${orderId}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': getStoredAdminPassword()
-        }
+        credentials: 'include'
       });
       if (response.ok) {
         fetchAdminOrders();
@@ -729,9 +726,7 @@ export default function App() {
         alert('Kon bestelling niet verwijderen op de server.');
       }
     } catch (err) {
-      const filtered = orders.filter((o) => o.id !== orderId);
-      setOrders(filtered);
-      localStorage.setItem('fd_orders_fallback', JSON.stringify(filtered));
+      alert('Kan de server niet bereiken. De bestelling is niet verwijderd.');
     }
   };
 
@@ -739,15 +734,16 @@ export default function App() {
     if (e) e.preventDefault();
     setAdminAuthError(null);
     try {
-      const response = await fetch('/api/orders', {
-        headers: { 'Authorization': adminPasswordInput }
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ password: adminPasswordInput })
       });
       if (!response.ok) {
         setAdminAuthError('Onjuist wachtwoord.');
         return;
       }
-      sessionStorage.setItem('fd_admin_password', adminPasswordInput);
-      sessionStorage.setItem('fd_admin_authed', 'true');
       setIsAdminAuthenticated(true);
       setAdminPasswordInput('');
       fetchAdminOrders();
@@ -808,36 +804,16 @@ export default function App() {
       if (response.ok) {
         const result = await response.json();
         setSubmittedOrderId(result.orderId);
+        setSubmittedTrackingToken(result.trackingToken);
         setIsClientFormOpen(false);
         setShowOrderSuccessModal(true);
-        
-        try {
-          const cached = localStorage.getItem('fd_orders_fallback');
-          const currentList = cached ? JSON.parse(cached) : [];
-          currentList.unshift({ id: result.orderId, createdAt: new Date().toISOString(), ...orderData });
-          localStorage.setItem('fd_orders_fallback', JSON.stringify(currentList));
-        } catch (err) {}
       } else {
         const errResult = await response.json();
         setSubmissionError(errResult.error || 'Kon de bestelling niet indienen.');
       }
     } catch (err) {
-      console.warn('POST failed, fallback to local indexing:', err);
-      const mockId = "FD-" + Math.floor(100000 + Math.random() * 900000);
-      const offlineOrder = { id: mockId, createdAt: new Date().toISOString(), ...orderData };
-      
-      try {
-        const cached = localStorage.getItem('fd_orders_fallback');
-        const currentList = cached ? JSON.parse(cached) : [];
-        currentList.unshift(offlineOrder);
-        localStorage.setItem('fd_orders_fallback', JSON.stringify(currentList));
-        
-        setSubmittedOrderId(mockId);
-        setIsClientFormOpen(false);
-        setShowOrderSuccessModal(true);
-      } catch (cacheErr) {
-        setSubmissionError('Lokaal opslaan is mislukt. Controleer uw browserinstellingen of verbinding.');
-      }
+      console.warn('Order submission failed:', err);
+      setSubmissionError('De bestelling kon niet veilig naar de server worden verzonden. Controleer uw verbinding en probeer het opnieuw.');
     } finally {
       setIsSubmittingOrder(false);
     }
@@ -1274,10 +1250,10 @@ export default function App() {
     handleGeneratePdfAndDownload(fileItem);
   };
 
-  const fetchTrackedOrder = async (orderId: string) => {
+  const fetchTrackedOrder = async (trackingToken: string) => {
     setIsLoadingTrackedOrder(true);
     try {
-      const response = await fetch(`/api/orders/${orderId}`);
+      const response = await fetch(`/api/public/orders/${encodeURIComponent(trackingToken)}`, { credentials: 'include' });
       if (response.ok) {
         const data = await response.json();
         setTrackedOrder(data);
@@ -1300,12 +1276,37 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const orderId = params.get('orderId');
-    if (orderId) {
-      setTrackedOrderId(orderId);
-      fetchTrackedOrder(orderId);
+    const token = params.get('token');
+    if (token) {
+      setTrackedOrderId(token);
+      fetchTrackedOrder(token);
     }
   }, []);
+
+  useEffect(() => {
+    fetch('/api/auth/session', { credentials: 'include' })
+      .then((response) => response.json())
+      .then((data) => setIsAdminAuthenticated(Boolean(data.authenticated)))
+      .catch(() => setIsAdminAuthenticated(false));
+  }, []);
+
+  useEffect(() => {
+    if (!trackedOrder) {
+      setTrackingQrCode('');
+      return;
+    }
+
+    const trackingToken = trackedOrderId || '';
+    const trackingUrl = `${window.location.origin}/?token=${encodeURIComponent(trackingToken)}`;
+
+    QRCode.toDataURL(trackingUrl, {
+      width: 320,
+      margin: 1,
+      errorCorrectionLevel: 'M'
+    })
+      .then((dataUrl) => setTrackingQrCode(dataUrl))
+      .catch(() => setTrackingQrCode(''));
+  }, [trackedOrder]);
 
   useEffect(() => {
     if (isAdminAuthenticated) {
@@ -1489,14 +1490,18 @@ export default function App() {
       badgeColorClass = "bg-purple-100 text-purple-800 border-purple-200";
     }
 
-    // QR scan link
-    const trackingUrl = `${window.location.origin}/?orderId=${o.id}`;
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(trackingUrl)}`;
+    const trackingToken = trackedOrderId || '';
+    const trackingUrl = `${window.location.origin}/?token=${encodeURIComponent(trackingToken)}`;
 
     // Client-side file selection for correction
     const handleCustomerFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
+      if (file.size > 4 * 1024 * 1024) {
+        alert('Bestanden mogen maximaal 4 MB groot zijn.');
+        e.target.value = '';
+        return;
+      }
 
       const reader = new FileReader();
       reader.onload = (event) => {
@@ -1522,11 +1527,12 @@ export default function App() {
       if (!customerUploadedImage) return;
       setIsUploadingCustomerFile(true);
       try {
-        const res = await fetch(`/api/orders/${o.id}/update-file`, {
+        const res = await fetch(`/api/public/orders/${encodeURIComponent(trackingToken)}/update-file`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
+          credentials: 'include',
           body: JSON.stringify({
             side: customerUploadSide,
             imageSrcUrl: customerUploadedImage,
@@ -1598,9 +1604,6 @@ export default function App() {
                   <span className="text-[10px] uppercase font-mono font-black text-slate-400">BESTELLING REFERENTIE</span>
                   <div className="flex items-center gap-2.5">
                     <h2 className="text-2xl font-black text-slate-900 font-mono tracking-tight">{o.id}</h2>
-                    {o.clientReference && (
-                      <span className="bg-slate-100 text-slate-650 px-2 py-0.5 rounded text-[10px] font-mono font-bold border border-slate-205">Ref: {o.clientReference}</span>
-                    )}
                   </div>
                 </div>
                 <div className="text-right">
@@ -1676,19 +1679,19 @@ export default function App() {
             </div>
 
             {/* Action required / Initial Upload files panel */}
-            {(isActionRequired || !o.imageSrcUrl) && (
+            {(isActionRequired || !o.hasDesignFile) && (
               <div className="bg-rose-50 border-2 border-rose-250 rounded-3xl p-6 sm:p-8 shadow-xs space-y-6 text-left">
                 <div className="flex items-center gap-2.5 text-slate-800">
-                  <div className={`w-8 h-8 rounded-full ${!o.imageSrcUrl ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'} flex items-center justify-center text-sm font-black`}>
-                    {!o.imageSrcUrl ? '↑' : '⚠'}
+                  <div className={`w-8 h-8 rounded-full ${!o.hasDesignFile ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'} flex items-center justify-center text-sm font-black`}>
+                    {!o.hasDesignFile ? '↑' : '⚠'}
                   </div>
                   <h3 className="font-extrabold text-base text-slate-900 border-none">
-                    {!o.imageSrcUrl ? 'Ontwerp-bestand Aanleveren' : 'Gecorrigeerd Bestand Aanleveren'}
+                    {!o.hasDesignFile ? 'Ontwerp-bestand Aanleveren' : 'Gecorrigeerd Bestand Aanleveren'}
                   </h3>
                 </div>
 
                 <div className="space-y-3.5">
-                  {o.imageSrcUrl && (
+                  {o.hasDesignFile && (
                     <div className="bg-white border border-rose-200/60 p-4 rounded-xl text-xs space-y-1 shadow-4xs">
                       <span className="text-[10px] uppercase font-bold text-rose-600 block">Opmerking operator:</span>
                       <p className="text-slate-800 font-bold italic">
@@ -1698,7 +1701,7 @@ export default function App() {
                   )}
 
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    {!o.imageSrcUrl 
+                    {!o.hasDesignFile
                       ? 'Upload het drukbestand (PNG of JPG) voor deze bestelling. Onze preflight engine valideert direct de gewenste DPI en beeldverhoudingen live.'
                       : 'Upload hier uw gewijzigde bestand (PNG of JPG) voor deze pre-press opdracht. Ons systeem herberekent direct de DPI voor preflight-goedkeuring.'}
                   </p>
@@ -1824,7 +1827,7 @@ export default function App() {
               <h3 className="font-extrabold text-xs uppercase tracking-widest text-slate-400 font-sans block text-center">Unieke Status scan</h3>
               
               <div className="w-44 h-44 mx-auto bg-slate-50 border border-slate-150 rounded-2xl flex items-center justify-center p-2 shadow-inner">
-                <img src={qrUrl} alt="Order QR" className="w-full h-full object-contain" />
+                <img src={trackingQrCode || undefined} alt="Order QR" className="w-full h-full object-contain" />
               </div>
 
               <div className="space-y-3 text-center">
@@ -1847,7 +1850,7 @@ export default function App() {
             </div>
 
             {/* Proefdruk download layer */}
-            <div className="bg-[#0b1a30] text-slate-100 border border-slate-800 rounded-3xl p-6 shadow-3xs space-y-3.5 text-left">
+            {o.imageSrcUrl && <div className="bg-[#0b1a30] text-slate-100 border border-slate-800 rounded-3xl p-6 shadow-3xs space-y-3.5 text-left">
               <div className="flex items-center gap-2">
                 <Scissors className="w-4.5 h-4.5 text-blue-400 shrink-0" />
                 <h3 className="font-extrabold text-sm text-slate-100">Layout Proefvel (SRA3)</h3>
@@ -1885,7 +1888,7 @@ export default function App() {
                   </>
                 )}
               </button>
-            </div>
+            </div>}
 
             {/* Specifications Details layout Card */}
             <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-3xs space-y-4 text-left">
@@ -1893,8 +1896,8 @@ export default function App() {
               
               <div className="space-y-3.5 text-xs">
                 <div className="bg-slate-50 p-2.5 rounded-xl space-y-0.5">
-                  <span className="text-[9px] uppercase font-bold text-slate-400">Naam / Contactpersoon</span>
-                  <p className="font-black text-slate-800">{o.clientName}</p>
+                  <span className="text-[9px] uppercase font-bold text-slate-400">Bestelnummer</span>
+                  <p className="font-black text-slate-800">{o.id}</p>
                 </div>
 
                 <div className="bg-slate-50 p-2.5 rounded-xl space-y-0.5">
@@ -2124,19 +2127,19 @@ export default function App() {
       <header className="border-b border-slate-200 bg-white sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
           <div
-            onClick={activePortal === 'client' || isOrdersRoute ? undefined : () => setActivePortal('landing')}
-            className={activePortal === 'client' || isOrdersRoute ? 'group' : 'cursor-pointer group'}
-            title={activePortal === 'client' || isOrdersRoute ? undefined : 'Klik hier om terug te gaan naar het Hoofdmenu'}
+            onClick={isClientPortal || isOrdersRoute ? undefined : () => setActivePortal('landing')}
+            className={isClientPortal || isOrdersRoute ? 'group' : 'cursor-pointer group'}
+            title={isClientPortal || isOrdersRoute ? undefined : 'Klik hier om terug te gaan naar het Hoofdmenu'}
           >
             <FDLogo />
           </div>
  
           {/* Premium Portal Switching Tabs */}
-          {activePortal !== 'client' && !isOrdersRoute && <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50 max-w-md">
+          {!isClientPortal && !isOrdersRoute && <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50 max-w-md">
             <button
               onClick={() => setActivePortal('landing')}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                activePortal === 'landing'
+                isLandingPortal
                   ? 'bg-white text-slate-900 shadow-xs'
                   : 'text-slate-500 hover:text-slate-800'
               }`}
@@ -2147,7 +2150,7 @@ export default function App() {
             <button
               onClick={() => setActivePortal('client')}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                activePortal === 'client'
+                isClientPortal
                   ? 'bg-white text-slate-900 shadow-xs'
                   : 'text-slate-500 hover:text-slate-800'
               }`}
@@ -2608,8 +2611,7 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     setIsAdminAuthenticated(false);
-                    sessionStorage.removeItem('fd_admin_authed');
-                    sessionStorage.removeItem('fd_admin_password');
+                            fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => undefined);
                   }}
                   className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg border border-slate-200 transition-colors cursor-pointer"
                 >
@@ -2764,6 +2766,20 @@ export default function App() {
                   >
                     <PlusCircle className="w-3.5 h-3.5 text-rose-500" />
                     <span className="text-slate-650 font-bold">Handmatige Opdracht</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAdminSubTab('ticket');
+                      fetchAdminStaff();
+                    }}
+                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 focus:outline-hidden ${
+                      adminSubTab === 'ticket'
+                        ? 'bg-rose-700 text-white shadow-xs font-extrabold'
+                        : 'text-slate-600 hover:text-slate-800 hover:bg-slate-50 border border-transparent hover:border-slate-200'
+                    }`}
+                  >
+                    <ClipboardList className="w-3.5 h-3.5 text-rose-500" />
+                    <span className="font-bold">Opdrachtbon</span>
                   </button>
                 </div>
 
@@ -3136,6 +3152,18 @@ export default function App() {
                           hour: '2-digit',
                           minute: '2-digit'
                         });
+                        let ticketLines: { description: string; quantity: number; unitPrice: number }[] = [];
+                        let ticketLinesInvalid = false;
+                        if (order.order_type === 'opdrachtbon') {
+                          try {
+                            const parsedTicketLines = JSON.parse(order.products_json || '[]');
+                            if (!Array.isArray(parsedTicketLines)) throw new Error('Productregels zijn geen lijst.');
+                            ticketLines = parsedTicketLines;
+                          } catch (error) {
+                            console.error(`Productregels voor opdrachtbon ${order.order_number || order.id} konden niet worden gelezen:`, error);
+                            ticketLinesInvalid = true;
+                          }
+                        }
 
                         return (
                           <div
@@ -3211,6 +3239,47 @@ export default function App() {
                                     <span className="text-[10px] uppercase font-bold text-slate-400">Aantal / Oplage</span>
                                     <p className="font-bold text-slate-800">{order.clientQuantity ? `${order.clientQuantity} stuks` : '100 stuks (Standaard)'}</p>
                                   </div>
+
+                                  {order.order_type === 'opdrachtbon' && (
+                                    <div className="space-y-2 rounded-xl border border-rose-100 bg-rose-50/50 p-3">
+                                      <div>
+                                        <span className="text-[10px] uppercase font-bold text-rose-700">Opdrachtbon</span>
+                                        <p className="font-mono font-bold text-slate-800">{order.order_number || order.id}</p>
+                                      </div>
+                                      {order.contact_person && <p className="text-slate-700">Contact: <strong>{order.contact_person}</strong></p>}
+                                      <p className="text-slate-700">
+                                        Levering: <strong>{order.delivery_method || 'Afhalen'}</strong>
+                                        {order.delivery_date ? ` · ${order.delivery_date}` : ''}
+                                      </p>
+                                      {order.delivery_address && <p className="break-words text-slate-600">{order.delivery_address}</p>}
+                                      <p className="text-slate-700">
+                                        Totaal: <strong>{Number(order.grand_total || 0).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong>
+                                        {' · '}Openstaand: <strong>{Number(order.remaining || 0).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong>
+                                      </p>
+                                      <p className="text-slate-700">
+                                        Bonstatus: <strong>{order.order_status || 'Nieuw'}</strong>
+                                        {' · '}Klantakkoord: <strong>{order.customer_approved ? 'Ja' : 'Nee'}</strong>
+                                      </p>
+                                      <div className="border-t border-rose-100 pt-2">
+                                        <span className="text-[10px] uppercase font-bold text-slate-500">Productregels</span>
+                                        {ticketLinesInvalid ? (
+                                          <p className="mt-1 text-rose-700">Productregels konden niet worden geladen.</p>
+                                        ) : ticketLines.length ? (
+                                          <ul className="mt-1 space-y-1 text-slate-700">
+                                            {ticketLines.map((line, index) => (
+                                              <li key={`${line.description}-${index}`} className="flex justify-between gap-2">
+                                                <span>{line.quantity}× {line.description}</span>
+                                                <strong className="shrink-0">{(Number(line.quantity) * Number(line.unitPrice)).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong>
+                                              </li>
+                                            ))}
+                                          </ul>
+                                        ) : (
+                                          <p className="mt-1 text-slate-500">Geen productregels opgeslagen.</p>
+                                        )}
+                                      </div>
+                                      {order.internal_notes && <p className="border-t border-rose-100 pt-2 text-amber-900"><strong>Intern:</strong> {order.internal_notes}</p>}
+                                    </div>
+                                  )}
 
                                   <div className="space-y-1 block pt-2 border-t border-slate-100 font-sans">
                                     <span className="text-[10px] uppercase font-extrabold text-slate-500 block mb-1">Toegewezen Personeelslid</span>
@@ -3513,17 +3582,15 @@ export default function App() {
                               <div className="flex items-center gap-3">
                                 {/* Real QR Code of the tracking URL */}
                                 <div className="shrink-0 bg-white border border-slate-200 p-1.5 rounded-lg shadow-4xs select-none">
-                                  <img
-                                    src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(window.location.origin + "/?orderId=" + order.id)}`}
-                                    alt="Status QR"
-                                    className="w-12 h-12 object-contain"
-                                  />
+                                  <div className="w-12 h-12 object-contain">
+                                    <TrackingQr value={`${window.location.origin}/?token=${encodeURIComponent(order.trackingToken)}`} size={100} />
+                                  </div>
                                 </div>
                                 <div className="space-y-0.5 text-left text-xs">
                                   <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">LIVE STATUS TRACKING</span>
                                   <div className="flex items-center gap-2">
                                     <a 
-                                      href={`/?orderId=${order.id}`} 
+                                      href={`/?token=${encodeURIComponent(order.trackingToken)}`}
                                       target="_blank" 
                                       rel="noreferrer" 
                                       className="text-xs font-black text-blue-750 hover:underline flex items-center gap-1 font-sans"
@@ -3604,6 +3671,7 @@ export default function App() {
                                         headers: {
                                           'Content-Type': 'application/json'
                                         },
+                                        credentials: 'include',
                                         body: JSON.stringify({
                                           status: inp.status,
                                           note: inp.note
@@ -3612,8 +3680,8 @@ export default function App() {
 
                                       if (res.ok) {
                                         // Update local state orders list
-                                        const updatedOrder = await res.json();
-                                        setOrders(prev => prev.map(item => item.id === order.id ? updatedOrder : item));
+                                        const result = await res.json();
+                                        setOrders(prev => prev.map(item => item.id === order.id ? result.order : item));
                                         
                                         // Clear input note
                                         setAdminStatusInputs(prev => ({
@@ -3786,6 +3854,13 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+            ) : adminSubTab === 'ticket' ? (
+              <OrderTicketWorkspace
+                products={STANDARD_PRODUCTS}
+                staff={staffList}
+                onOrderCreated={fetchAdminOrders}
+                onViewOrders={() => setAdminSubTab('orders')}
+              />
             ) : (
                 /* CREATE MANUAL ORDER WORKSPACE VIEW */
                 <div className="space-y-6 animate-fade-in font-sans">
@@ -3820,11 +3895,7 @@ export default function App() {
                           <div className="space-y-4 text-left">
                             <span className="text-[10px] uppercase font-bold text-slate-400 block font-mono">LIVE QR CODE VOOR DE KLANT</span>
                             <div className="w-36 h-36 border border-slate-205 p-2 rounded-xl bg-white shadow-4xs mx-auto md:mx-0">
-                              <img
-                                src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(window.location.origin + "/?orderId=" + manualCreatedOrder.id)}`}
-                                alt="Order QR Code"
-                                className="w-full h-full object-contain"
-                              />
+                                  <TrackingQr value={`${window.location.origin}/?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`} size={150} />
                             </div>
                             <p className="text-[11px] text-slate-500 leading-relaxed font-sans">
                               Laat de klant deze QR-code scannen met hun smartphone of print deze op de bon. Zij kunnen direct op hun telefoon de bestanden uploaden en de pre-press status inzien.
@@ -3850,13 +3921,13 @@ export default function App() {
                                 <input
                                   type="text"
                                   readOnly
-                                  value={`${window.location.origin}/?orderId=${manualCreatedOrder.id}`}
+                                  value={`${window.location.origin}/?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`}
                                   className="w-full bg-slate-50 text-[11px] font-mono font-bold border rounded p-1.5 focus:outline-hidden"
                                   onClick={(e) => (e.target as HTMLInputElement).select()}
                                 />
                                 <button
                                   onClick={() => {
-                                    navigator.clipboard.writeText(`${window.location.origin}/?orderId=${manualCreatedOrder.id}`);
+                                    navigator.clipboard.writeText(`${window.location.origin}/?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`);
                                     alert("Gekopieerd naar klembord!");
                                   }}
                                   className="px-3 py-1.5 bg-slate-900 text-white font-extrabold text-[10px] rounded hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
@@ -3911,17 +3982,18 @@ export default function App() {
                           };
 
                           try {
-                            const res = await fetch('/api/orders', {
+                            const res = await fetch('/api/admin/orders', {
                               method: 'POST',
                               headers: {
                                 'Content-Type': 'application/json'
                               },
+                              credentials: 'include',
                               body: JSON.stringify({ orderData: manualOrderPayload })
                             });
 
                             if (res.ok) {
                               const result = await res.json();
-                              setManualCreatedOrder({ id: result.orderId, ...manualOrderPayload });
+                              setManualCreatedOrder({ id: result.orderId, trackingToken: result.trackingToken, ...manualOrderPayload });
                               
                               // Reset creation inputs
                               setAdminOrderClientName("");
@@ -4390,19 +4462,18 @@ export default function App() {
                 </div>
 
                 {/* Status QR Code */}
-                {submittedOrderId && (
+                {(submittedOrderId || submittedTrackingToken) && (
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/55 max-w-xs mx-auto space-y-3.5">
                     <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">SCAN OM OP TELEFOON TE VOLGEN</span>
-                    <img 
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(window.location.origin + "/?orderId=" + submittedOrderId)}`}
-                      alt="Order Tracking QR"
-                      className="w-32 h-32 mx-auto rounded-lg shadow-sm bg-white p-1"
-                    />
+                    <div className="w-32 h-32 mx-auto rounded-lg shadow-sm bg-white p-1">
+                      <TrackingQr value={`${window.location.origin}/?token=${encodeURIComponent(submittedTrackingToken || '')}`} size={150} />
+                    </div>
                     <button
                       type="button"
                       onClick={() => {
-                        setTrackedOrderId(submittedOrderId);
-                        fetchTrackedOrder(submittedOrderId);
+                        const trackingToken = submittedTrackingToken;
+                        setTrackedOrderId(trackingToken || null);
+                        if (trackingToken) fetchTrackedOrder(trackingToken);
                         setShowOrderSuccessModal(false);
                       }}
                       className="text-[11px] text-blue-700 hover:underline font-extrabold block w-full text-center"
@@ -4420,9 +4491,10 @@ export default function App() {
                 <div className="flex items-center gap-2 max-w-xs mx-auto">
                   <button
                     onClick={() => {
-                      if (submittedOrderId) {
-                        setTrackedOrderId(submittedOrderId);
-                        fetchTrackedOrder(submittedOrderId);
+                      const trackingToken = submittedTrackingToken;
+                      if (trackingToken) {
+                        setTrackedOrderId(trackingToken);
+                        fetchTrackedOrder(trackingToken);
                       }
                       setShowOrderSuccessModal(false);
                     }}

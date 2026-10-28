@@ -1,0 +1,10 @@
+{
+  "name": "fastsystemdemo",
+  "private": true,
+  "scripts": {
+    "start": "npm --prefix pre-press-file-checker run dev",
+    "dev": "npm --prefix pre-press-file-checker run dev",
+    "build": "npm --prefix pre-press-file-checker run build",
+    "lint": "npm --prefix pre-press-file-checker run lint"
+  }
+}

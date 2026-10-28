@@ -1,7 +1,4 @@
-/**
- * Dynamic CDN Loader and Renderer for PDF.js to support seamless client-side 
- * PDF rendering in sandboxed iframe previews.
- */
+let loadingPromise: Promise<typeof import('pdfjs-dist')> | null = null;
 
 interface RenderedPage {
   dataUrl: string;
@@ -16,43 +13,21 @@ interface PdfRenderResult {
   pageCount: number;
 }
 
-const PDF_JS_VERSION = '3.11.174';
-const PDFJS_CDN = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDF_JS_VERSION}/pdf.min.js`;
-const PDFJS_WORKER_CDN = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDF_JS_VERSION}/pdf.worker.min.js`;
-
-let loadingPromise: Promise<any> | null = null;
-
-export function loadPdfJs(): Promise<any> {
-  if (loadingPromise) return loadingPromise;
-
-  loadingPromise = new Promise((resolve, reject) => {
-    // Already loaded in window?
-    if ((window as any).pdfjsLib) {
-      resolve((window as any).pdfjsLib);
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = PDFJS_CDN;
-    script.async = true;
-    
-    script.onload = () => {
-      const pdfjsLib = (window as any).pdfjsLib;
-      if (pdfjsLib) {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN;
-        resolve(pdfjsLib);
-      } else {
-        reject(new Error('PDF.js failed to initialize on search window namespace.'));
-      }
-    };
-
-    script.onerror = () => {
-      loadingPromise = null; // allow retrying
-      reject(new Error('Er was een probleem met het laden van de PDF preview engine vanaf het CDN.'));
-    };
-
-    document.head.appendChild(script);
-  });
+export function loadPdfJs() {
+  if (!loadingPromise) {
+    loadingPromise = Promise.all([
+      import('pdfjs-dist'),
+      import('pdfjs-dist/build/pdf.worker.min.mjs?url')
+    ])
+      .then(([pdfjsLib, worker]) => {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
+        return pdfjsLib;
+      })
+      .catch((error) => {
+        loadingPromise = null;
+        throw error;
+      });
+  }
 
   return loadingPromise;
 }
@@ -110,6 +85,7 @@ export async function renderPdfFile(file: File, maxPagesToRender: number = 8): P
           const renderContext = {
             canvasContext: context,
             viewport: viewport,
+            canvas,
           };
 
           await page.render(renderContext).promise;
