@@ -254,12 +254,28 @@ async function startServer() {
     "backFileName",
   ];
 
+  function serializeAdminOrder(order: any) {
+    const result = { ...order };
+    if (Array.isArray(order.customerFiles)) {
+      result.customerFiles = order.customerFiles.map(({ dataUrl: _dataUrl, ...file }: any) => file);
+    }
+    return result;
+  }
+
   function serializePublicOrder(order: any) {
     const result: Record<string, unknown> = {};
     publicOrderFields.forEach((field) => {
       if (field in order) result[field] = order[field];
     });
     result.hasDesignFile = Boolean(order.imageSrcUrl);
+    result.customerFiles = (Array.isArray(order.customerFiles) ? order.customerFiles : []).map((file: any) => ({
+      id: file.id,
+      fileName: file.fileName,
+      fileType: file.fileType,
+      size: file.size,
+      side: file.side,
+      uploadedAt: file.uploadedAt
+    }));
     result.history = (Array.isArray(order.history) ? order.history : []).slice(-30).map((entry: any) => ({
       date: entry.date,
       status: String(entry.status || "").slice(0, 100),
@@ -294,6 +310,23 @@ async function startServer() {
       return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
     }
     return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+
+  function validateCustomerFile(value: any) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (typeof value.fileName !== "string" || typeof value.fileType !== "string" || typeof value.dataUrl !== "string") return null;
+
+    const fileName = path.basename(value.fileName.replace(/\\/g, "/")).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+    const match = /^data:(application\/pdf|image\/png|image\/jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value.dataUrl);
+    if (!fileName || fileName.length > 255 || !match || match[1] !== value.fileType) return null;
+
+    const bytes = Buffer.from(match[2], "base64");
+    if (bytes.length === 0 || bytes.length > 4 * 1024 * 1024) return null;
+    if (value.fileType === "application/pdf" && !bytes.subarray(0, 5).equals(Buffer.from("%PDF-"))) return null;
+    if (value.fileType === "image/png" && !bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return null;
+    if (value.fileType === "image/jpeg" && (bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff)) return null;
+
+    return { fileName, fileType: value.fileType, dataUrl: value.dataUrl, size: bytes.length };
   }
 
   function sanitizeOrderData(data: any, allowTicketFields = false) {
@@ -452,11 +485,11 @@ async function startServer() {
   });
 
   app.get("/api/orders", requireAdmin, (req, res) => {
-    res.json(loadOrders());
+    res.json(loadOrders().map(serializeAdminOrder));
   });
 
   app.get("/api/admin/orders", requireAdmin, (req, res) => {
-    res.json(loadOrders());
+    res.json(loadOrders().map(serializeAdminOrder));
   });
 
   app.get("/api/orders/:id", requireAdmin, (req, res) => {
@@ -465,7 +498,29 @@ async function startServer() {
     if (!order) {
       return res.status(404).json({ error: "Order not found." });
     }
-    res.json(order);
+    res.json(serializeAdminOrder(order));
+  });
+
+  app.get("/api/orders/:id/files/:fileId", requireAdmin, (req, res) => {
+    if (!/^[a-f0-9]{24}$/.test(req.params.fileId)) {
+      return res.status(404).json({ error: "File not found." });
+    }
+
+    const order = loadOrders().find((item: any) => item.id === req.params.id);
+    const file = (Array.isArray(order?.customerFiles) ? order.customerFiles : [])
+      .find((item: any) => item.id === req.params.fileId);
+    if (!file || typeof file.dataUrl !== "string") {
+      return res.status(404).json({ error: "File not found." });
+    }
+
+    const match = /^data:(application\/pdf|image\/png|image\/jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(file.dataUrl);
+    if (!match || match[1] !== file.fileType) {
+      return res.status(500).json({ error: "Stored file is invalid." });
+    }
+
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    return res.type(file.fileType).attachment(file.fileName).send(Buffer.from(match[2], "base64"));
   });
 
   app.get("/api/public/orders/:trackingToken", (req, res) => {
@@ -531,7 +586,7 @@ async function startServer() {
     }
 
     saveOrders(orders);
-    return res.json({ success: true, order: orders[idx] });
+    return res.json({ success: true, order: serializeAdminOrder(orders[idx]) });
   });
 
   app.post("/api/public/orders/:trackingToken/update-file", rateLimit(10), (req, res) => {
@@ -550,6 +605,11 @@ async function startServer() {
       return res.status(400).json({ error: "Invalid file payload." });
     }
 
+    const sourceFile = req.body?.sourceFile === undefined ? null : validateCustomerFile(req.body.sourceFile);
+    if (req.body?.sourceFile !== undefined && !sourceFile) {
+      return res.status(400).json({ error: "The original file is invalid or exceeds the 4 MB limit." });
+    }
+
     if (side === "front") {
       order.imageSrcUrl = imageSrcUrl;
       order.frontFileName = fileName;
@@ -562,6 +622,19 @@ async function startServer() {
       order.backComputedDpi = dpi;
       order.backPixelWidth = pixelWidth;
       order.backPixelHeight = pixelHeight;
+    }
+
+    if (sourceFile) {
+      const customerFiles = Array.isArray(order.customerFiles) ? order.customerFiles : [];
+      order.customerFiles = [
+        ...customerFiles.filter((file: any) => file.side !== side),
+        {
+          id: crypto.randomBytes(12).toString("hex"),
+          ...sourceFile,
+          side,
+          uploadedAt: new Date().toISOString()
+        }
+      ];
     }
 
     order.status = "Bestanden Gewijzigd";

@@ -179,7 +179,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   }, []);
 
   const trackingUrl = createdTicket
-    ? `${window.location.origin}/?token=${encodeURIComponent(createdTicket.trackingToken)}`
+    ? `${window.location.origin}/klantportal?token=${encodeURIComponent(createdTicket.trackingToken)}`
     : '';
 
   const handleProductChange = (productId: string) => {
@@ -335,7 +335,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       `Aanbetaling: ${money(Number(createdTicket.data.prepayment))}`,
       `Openstaand: ${money(Number(createdTicket.data.remaining))}`,
       '',
-      `Volg uw opdracht via: ${trackingUrl}`,
+      `Volg uw opdracht en lever bestanden aan via: ${trackingUrl}`,
     ].join('\n');
     window.location.href = `mailto:${encodeURIComponent(String(createdTicket.data.clientEmail))}?subject=${encodeURIComponent(`Opdrachtbon ${createdTicket.data.order_number} · FD Printing Center`)}&body=${encodeURIComponent(emailBody)}`;
   };
@@ -420,9 +420,12 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             </div>
 
             <aside className="flex flex-col items-center gap-3 rounded-xl border border-slate-200 p-4 text-center">
-              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Live tracking</span>
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Klantportal · status &amp; bestanden</span>
               <TicketQr value={trackingUrl} />
               <a className="max-w-56 break-all text-xs text-blue-700 underline" href={trackingUrl}>{trackingUrl}</a>
+              <p className="max-w-56 text-[10px] leading-relaxed text-slate-500">
+                Scan om de status te volgen en het drukbestand aan deze opdrachtbon toe te voegen.
+              </p>
               <div className="w-full border-t border-slate-100 pt-3 text-left text-xs text-slate-600">
                 <p className="flex justify-between gap-6"><span>Subtotaal</span><span>{money(Number(ticketData.subtotal))}</span></p>
                 <p className="mt-1 flex justify-between gap-6"><span>BTW (21%)</span><span>{money(Number(ticketData.vat))}</span></p>

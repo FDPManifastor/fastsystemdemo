@@ -204,6 +204,9 @@ export default function App() {
   const [isUpdatingStatus, setIsUpdatingStatus] = useState<Record<string, boolean>>({});
   const [customerUploadedImage, setCustomerUploadedImage] = useState<string | null>(null);
   const [customerUploadedFileName, setCustomerUploadedFileName] = useState<string>('');
+  const [customerUploadedFileType, setCustomerUploadedFileType] = useState<string>('');
+  const [customerUploadedOriginal, setCustomerUploadedOriginal] = useState<string | null>(null);
+  const [customerUploadError, setCustomerUploadError] = useState<string | null>(null);
   const [customerUploadedDpi, setCustomerUploadedDpi] = useState<number>(300);
   const [customerUploadedPixels, setCustomerUploadedPixels] = useState<{w: number, h: number}>({w: 0, h: 0});
   const [customerUploadSide, setCustomerUploadSide] = useState<'front' | 'back'>('front');
@@ -1297,7 +1300,7 @@ export default function App() {
     }
 
     const trackingToken = trackedOrderId || '';
-    const trackingUrl = `${window.location.origin}/?token=${encodeURIComponent(trackingToken)}`;
+    const trackingUrl = `${window.location.origin}/klantportal?token=${encodeURIComponent(trackingToken)}`;
 
     QRCode.toDataURL(trackingUrl, {
       width: 320,
@@ -1491,40 +1494,88 @@ export default function App() {
     }
 
     const trackingToken = trackedOrderId || '';
-    const trackingUrl = `${window.location.origin}/?token=${encodeURIComponent(trackingToken)}`;
+    const trackingUrl = `${window.location.origin}/klantportal?token=${encodeURIComponent(trackingToken)}`;
 
     // Client-side file selection for correction
-    const handleCustomerFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const clearCustomerUpload = () => {
+      setCustomerUploadedImage(null);
+      setCustomerUploadedOriginal(null);
+      setCustomerUploadedFileName('');
+      setCustomerUploadedFileType('');
+      setCustomerUploadError(null);
+    };
+
+    const handleCustomerFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
       if (file.size > 4 * 1024 * 1024) {
-        alert('Bestanden mogen maximaal 4 MB groot zijn.');
+        clearCustomerUpload();
+        setCustomerUploadError('Bestanden mogen maximaal 4 MB groot zijn.');
         e.target.value = '';
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          const trimW = Number(o.customWidth) || 210;
-          const trimH = Number(o.customHeight) || 297;
-          // Calculate DPI:
-          // DPI = (pixels / dimension_mm) * 25.4
-          const dpi = Math.round((Math.max(img.naturalWidth, img.naturalHeight) / Math.max(trimW, trimH)) * 25.4);
-          
-          setCustomerUploadedDpi(dpi);
-          setCustomerUploadedFileName(file.name);
-          setCustomerUploadedPixels({ w: img.naturalWidth, h: img.naturalHeight });
-          setCustomerUploadedImage(event.target?.result as string);
-        };
-        img.src = event.target?.result as string;
-      };
-      reader.readAsDataURL(file);
+      clearCustomerUpload();
+      const extension = file.name.split('.').pop()?.toLowerCase();
+      const fileType = file.type === 'image/jpg'
+        ? 'image/jpeg'
+        : file.type || (extension === 'pdf' ? 'application/pdf' : extension === 'png' ? 'image/png' : extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : '');
+      if (!['application/pdf', 'image/png', 'image/jpeg'].includes(fileType)) {
+        setCustomerUploadError('Upload een PDF, PNG of JPG-bestand.');
+        e.target.value = '';
+        return;
+      }
+
+      try {
+        const originalDataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => typeof reader.result === 'string'
+            ? resolve(reader.result)
+            : reject(new Error('Het bestand kon niet worden gelezen.'));
+          reader.onerror = () => reject(new Error('Het bestand kon niet worden gelezen.'));
+          reader.readAsDataURL(file);
+        });
+
+        let previewDataUrl: string;
+        let pixelWidth: number;
+        let pixelHeight: number;
+        if (fileType === 'application/pdf') {
+          const rendered = await renderPdfFile(file, 1);
+          const firstPage = rendered.pages[0];
+          if (!firstPage) throw new Error('De PDF bevat geen leesbare pagina.');
+          previewDataUrl = firstPage.dataUrl;
+          pixelWidth = firstPage.width;
+          pixelHeight = firstPage.height;
+        } else {
+          const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const preview = new Image();
+            preview.onload = () => resolve(preview);
+            preview.onerror = () => reject(new Error('De afbeelding kan niet worden geopend.'));
+            preview.src = originalDataUrl;
+          });
+          previewDataUrl = originalDataUrl;
+          pixelWidth = image.naturalWidth;
+          pixelHeight = image.naturalHeight;
+        }
+
+        const trimW = Number(o.customWidth) || 210;
+        const trimH = Number(o.customHeight) || 297;
+        const dpi = Math.round((Math.max(pixelWidth, pixelHeight) / Math.max(trimW, trimH)) * 25.4);
+        setCustomerUploadedDpi(dpi);
+        setCustomerUploadedFileName(file.name);
+        setCustomerUploadedFileType(fileType);
+        setCustomerUploadedOriginal(originalDataUrl);
+        setCustomerUploadedPixels({ w: pixelWidth, h: pixelHeight });
+        setCustomerUploadedImage(previewDataUrl);
+      } catch (error) {
+        console.error('Klantbestand kon niet worden voorbereid:', error);
+        setCustomerUploadError(error instanceof Error ? error.message : 'Het bestand kon niet worden voorbereid.');
+        e.target.value = '';
+      }
     };
 
     const handleUploadCorruptedFile = async () => {
-      if (!customerUploadedImage) return;
+      if (!customerUploadedImage || !customerUploadedOriginal) return;
       setIsUploadingCustomerFile(true);
       try {
         const res = await fetch(`/api/public/orders/${encodeURIComponent(trackingToken)}/update-file`, {
@@ -1539,21 +1590,23 @@ export default function App() {
             fileName: customerUploadedFileName,
             dpi: customerUploadedDpi,
             pixelWidth: customerUploadedPixels.w,
-            pixelHeight: customerUploadedPixels.h
+            pixelHeight: customerUploadedPixels.h,
+            sourceFile: {
+              fileName: customerUploadedFileName,
+              fileType: customerUploadedFileType,
+              dataUrl: customerUploadedOriginal
+            }
           })
         });
 
-        if (res.ok) {
-          const data = await res.json();
-          // Reload order
-          setTrackedOrder(data.order);
-          // Clear upload state
-          setCustomerUploadedImage(null);
-          setCustomerUploadedFileName('');
-          alert('Uw gewijzigde bestand is succesvol verwerkt en ingestuurd naar de Pre-Press operator! De status is gewijzigd naar "Bestanden Gewijzigd".');
-        } else {
-          alert('Fout bij het bijwerken van het bestand.');
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.error || 'Fout bij het bijwerken van het bestand.');
+          return;
         }
+        setTrackedOrder(data.order);
+        clearCustomerUpload();
+        alert('Uw bestand is aan de opdracht toegevoegd en ingestuurd naar de Pre-Press operator! De status is gewijzigd naar "Bestanden Gewijzigd".');
       } catch (err) {
         console.error('Customer file update failure:', err);
         alert('Fout bij het verbinding maken met de preflight servers.');
@@ -1702,14 +1755,14 @@ export default function App() {
 
                   <p className="text-xs text-slate-600 leading-relaxed">
                     {!o.hasDesignFile
-                      ? 'Upload het drukbestand (PNG of JPG) voor deze bestelling. Onze preflight engine valideert direct de gewenste DPI en beeldverhoudingen live.'
-                      : 'Upload hier uw gewijzigde bestand (PNG of JPG) voor deze pre-press opdracht. Ons systeem herberekent direct de DPI voor preflight-goedkeuring.'}
+                      ? 'Upload het drukbestand (PDF, PNG of JPG) voor deze bestelling. Het originele bestand wordt aan uw opdracht gekoppeld.'
+                      : 'Upload hier uw gewijzigde bestand (PDF, PNG of JPG). Het originele bestand wordt aan uw opdracht gekoppeld en de preview wordt opnieuw gecontroleerd.'}
                   </p>
 
                   <div className="grid grid-cols-2 gap-2 bg-white/60 p-1 rounded-xl border border-rose-200 max-w-xs">
                     <button
                       type="button"
-                      onClick={() => { setCustomerUploadSide('front'); setCustomerUploadedImage(null); }}
+                      onClick={() => { setCustomerUploadSide('front'); clearCustomerUpload(); }}
                       className={`py-1.5 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer ${customerUploadSide === 'front' ? 'bg-rose-600 text-white' : 'text-rose-800 hover:bg-rose-200/50'}`}
                     >
                       A-Zijde (Voorkant)
@@ -1717,7 +1770,7 @@ export default function App() {
                     {o.printSides === 'double' && (
                       <button
                         type="button"
-                        onClick={() => { setCustomerUploadSide('back'); setCustomerUploadedImage(null); }}
+                        onClick={() => { setCustomerUploadSide('back'); clearCustomerUpload(); }}
                         className={`py-1.5 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer ${customerUploadSide === 'back' ? 'bg-rose-600 text-white' : 'text-rose-800 hover:bg-rose-200/50'}`}
                       >
                         B-Zijde (Achterkant)
@@ -1729,18 +1782,24 @@ export default function App() {
                   <div className="border-2 border-dashed border-rose-250 bg-white hover:bg-slate-50 transition-all rounded-3xl p-8 text-center cursor-pointer relative">
                     <input
                       type="file"
-                      accept="image/png, image/jpeg, image/jpg"
+                      accept="application/pdf,image/png,image/jpeg,.pdf,.png,.jpg,.jpeg"
                       onChange={handleCustomerFileChange}
                       className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                     />
                     <div className="space-y-1.5">
                       <span className="text-2xl block">&#128196;</span>
                       <p className="text-xs font-bold text-slate-800">
-                        Klik hier of sleep uw nieuwe {customerUploadSide === 'front' ? 'Voorkant' : 'Achterkant'} bestand om te uploaden
+                        Klik hier of sleep uw drukbestand voor de {customerUploadSide === 'front' ? 'voorkant' : 'achterkant'} hierheen
                       </p>
-                      <p className="text-[10px] text-slate-400 font-semibold font-mono">PNG of JPG &bull; Automatische DPI weergave</p>
+                      <p className="text-[10px] text-slate-400 font-semibold font-mono">PDF, PNG of JPG &bull; maximaal 4 MB</p>
                     </div>
                   </div>
+
+                  {customerUploadError && (
+                    <p role="alert" className="rounded-lg border border-rose-200 bg-white p-3 text-xs font-semibold text-rose-700">
+                      {customerUploadError}
+                    </p>
+                  )}
 
                   {customerUploadedImage && (
                     <div className="bg-white p-4 rounded-2xl border border-rose-150 space-y-4 text-xs shadow-4xs">
@@ -1751,18 +1810,22 @@ export default function App() {
                         <div className="space-y-1 max-w-xs truncate">
                           <p className="font-extrabold text-slate-800 truncate" title={customerUploadedFileName}>{customerUploadedFileName}</p>
                           <p className="text-[10px] text-slate-505 font-mono italic">
-                            {customerUploadedPixels.w} &times; {customerUploadedPixels.h} pixels
+                            {customerUploadedFileType === 'application/pdf' ? 'PDF · origineel bestand wordt meegestuurd' : `${customerUploadedPixels.w} × ${customerUploadedPixels.h} pixels`}
                           </p>
                         </div>
                       </div>
 
                       <div className="border-t border-slate-100 pt-3 flex items-center justify-between flex-wrap gap-2">
                         <div>
-                          <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">Berekende Kwaliteit</span>
+                          <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">Bestandscontrole</span>
                           <span className={`text-[11px] font-black font-mono px-2 py-0.5 rounded leading-none ${
-                            customerUploadedDpi >= 300 ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-805'
+                            customerUploadedFileType === 'application/pdf' || customerUploadedDpi >= 300
+                              ? 'bg-emerald-50 text-emerald-800'
+                              : 'bg-amber-50 text-amber-805'
                           }`}>
-                            {customerUploadedDpi} DPI {customerUploadedDpi >= 300 ? '(Uitstekend!)' : '(Verbeterd)'}
+                            {customerUploadedFileType === 'application/pdf'
+                              ? 'Originele PDF wordt meegestuurd'
+                              : `${customerUploadedDpi} DPI ${customerUploadedDpi >= 300 ? '(Uitstekend!)' : '(Lage resolutie)'}`}
                           </span>
                         </div>
 
@@ -1784,6 +1847,20 @@ export default function App() {
                   )}
                 </div>
               </div>
+            )}
+
+            {Array.isArray(o.customerFiles) && o.customerFiles.length > 0 && (
+              <section className="bg-white border border-emerald-200 rounded-3xl p-6 shadow-3xs space-y-3 text-left">
+                <h3 className="font-extrabold text-sm text-slate-800">Bestanden ontvangen</h3>
+                <ul className="space-y-2 text-xs">
+                  {o.customerFiles.map((file: any) => (
+                    <li key={file.id} className="flex flex-wrap justify-between gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-slate-700">
+                      <span className="font-semibold break-all">{file.fileName}</span>
+                      <span>{file.side === 'back' ? 'Achterzijde' : 'Voorzijde'} · {new Date(file.uploadedAt).toLocaleString('nl-NL')}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             )}
 
             {/* Custom history list timeline */}
@@ -1824,15 +1901,15 @@ export default function App() {
             
             {/* Displaying Live QR code */}
             <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-3xs text-center space-y-4 text-left">
-              <h3 className="font-extrabold text-xs uppercase tracking-widest text-slate-400 font-sans block text-center">Unieke Status scan</h3>
+              <h3 className="font-extrabold text-xs uppercase tracking-widest text-slate-400 font-sans block text-center">Klantportal · status &amp; bestanden</h3>
               
               <div className="w-44 h-44 mx-auto bg-slate-50 border border-slate-150 rounded-2xl flex items-center justify-center p-2 shadow-inner">
-                <img src={trackingQrCode || undefined} alt="Order QR" className="w-full h-full object-contain" />
+                <img src={trackingQrCode || undefined} alt="Klantportal QR voor deze opdracht" className="w-full h-full object-contain" />
               </div>
 
               <div className="space-y-3 text-center">
                 <p className="text-[11px] text-slate-500 leading-normal px-1 font-sans">
-                  Sla deze code op uw telefoon op om de preflight status overal live te volgen.
+                  Scan om de status te volgen en het drukbestand aan deze opdracht toe te voegen.
                 </p>
 
                 <button
@@ -3356,6 +3433,30 @@ export default function App() {
 
                               {/* Right Column: Preflight Downloads and Render Canvas */}
                               <div className="lg:col-span-4 space-y-4 font-sans">
+                                {Array.isArray(order.customerFiles) && order.customerFiles.length > 0 && (
+                                  <section className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                                    <h5 className="text-xs font-extrabold uppercase tracking-widest text-emerald-900">
+                                      Door klant aangeleverde bestanden
+                                    </h5>
+                                    {order.customerFiles.map((file: any) => (
+                                      <div key={file.id} className="flex items-center justify-between gap-3 rounded-lg bg-white p-2.5">
+                                        <div className="min-w-0">
+                                          <p className="truncate text-[11px] font-bold text-slate-800" title={file.fileName}>{file.fileName}</p>
+                                          <p className="text-[9px] text-slate-500">
+                                            {file.side === 'back' ? 'Achterzijde' : 'Voorzijde'} · {(file.size / (1024 * 1024)).toFixed(2)} MB · {new Date(file.uploadedAt).toLocaleDateString('nl-NL')}
+                                          </p>
+                                        </div>
+                                        <a
+                                          href={`/api/orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(file.id)}`}
+                                          className="shrink-0 rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-emerald-800"
+                                        >
+                                          Origineel downloaden
+                                        </a>
+                                      </div>
+                                    ))}
+                                  </section>
+                                )}
+
                                 <h5 className="text-xs font-extrabold uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
                                   <Download className="w-3.5 h-3.5 text-slate-400" /> Print-Ready Bestanden
                                 </h5>
@@ -3583,14 +3684,14 @@ export default function App() {
                                 {/* Real QR Code of the tracking URL */}
                                 <div className="shrink-0 bg-white border border-slate-200 p-1.5 rounded-lg shadow-4xs select-none">
                                   <div className="w-12 h-12 object-contain">
-                                    <TrackingQr value={`${window.location.origin}/?token=${encodeURIComponent(order.trackingToken)}`} size={100} />
+                                    <TrackingQr value={`${window.location.origin}/klantportal?token=${encodeURIComponent(order.trackingToken)}`} size={100} />
                                   </div>
                                 </div>
                                 <div className="space-y-0.5 text-left text-xs">
                                   <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">LIVE STATUS TRACKING</span>
                                   <div className="flex items-center gap-2">
                                     <a 
-                                      href={`/?token=${encodeURIComponent(order.trackingToken)}`}
+                                      href={`/klantportal?token=${encodeURIComponent(order.trackingToken)}`}
                                       target="_blank" 
                                       rel="noreferrer" 
                                       className="text-xs font-black text-blue-750 hover:underline flex items-center gap-1 font-sans"
@@ -3895,7 +3996,7 @@ export default function App() {
                           <div className="space-y-4 text-left">
                             <span className="text-[10px] uppercase font-bold text-slate-400 block font-mono">LIVE QR CODE VOOR DE KLANT</span>
                             <div className="w-36 h-36 border border-slate-205 p-2 rounded-xl bg-white shadow-4xs mx-auto md:mx-0">
-                                  <TrackingQr value={`${window.location.origin}/?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`} size={150} />
+                                  <TrackingQr value={`${window.location.origin}/klantportal?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`} size={150} />
                             </div>
                             <p className="text-[11px] text-slate-500 leading-relaxed font-sans">
                               Laat de klant deze QR-code scannen met hun smartphone of print deze op de bon. Zij kunnen direct op hun telefoon de bestanden uploaden en de pre-press status inzien.
@@ -3921,13 +4022,13 @@ export default function App() {
                                 <input
                                   type="text"
                                   readOnly
-                                  value={`${window.location.origin}/?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`}
+                                  value={`${window.location.origin}/klantportal?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`}
                                   className="w-full bg-slate-50 text-[11px] font-mono font-bold border rounded p-1.5 focus:outline-hidden"
                                   onClick={(e) => (e.target as HTMLInputElement).select()}
                                 />
                                 <button
                                   onClick={() => {
-                                    navigator.clipboard.writeText(`${window.location.origin}/?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`);
+                                    navigator.clipboard.writeText(`${window.location.origin}/klantportal?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`);
                                     alert("Gekopieerd naar klembord!");
                                   }}
                                   className="px-3 py-1.5 bg-slate-900 text-white font-extrabold text-[10px] rounded hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
@@ -4466,7 +4567,7 @@ export default function App() {
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/55 max-w-xs mx-auto space-y-3.5">
                     <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">SCAN OM OP TELEFOON TE VOLGEN</span>
                     <div className="w-32 h-32 mx-auto rounded-lg shadow-sm bg-white p-1">
-                      <TrackingQr value={`${window.location.origin}/?token=${encodeURIComponent(submittedTrackingToken || '')}`} size={150} />
+                      <TrackingQr value={`${window.location.origin}/klantportal?token=${encodeURIComponent(submittedTrackingToken || '')}`} size={150} />
                     </div>
                     <button
                       type="button"
