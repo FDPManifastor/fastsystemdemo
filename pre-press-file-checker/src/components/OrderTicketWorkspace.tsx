@@ -18,8 +18,9 @@ interface TicketLine {
 interface OrderTicketWorkspaceProps {
   products: PrintProduct[];
   staff: TicketStaff[];
-  onOrderCreated: () => void;
+  onOrderCreated?: () => void;
   onViewOrders: () => void;
+  publicAccess?: boolean;
 }
 
 interface CreatedTicket {
@@ -88,7 +89,7 @@ function TicketQr({ value }: { value: string }) {
   return <img src={source} alt="QR-code voor ordertracking" className="w-36 h-36 object-contain" />;
 }
 
-export default function OrderTicketWorkspace({ products, staff, onOrderCreated, onViewOrders }: OrderTicketWorkspaceProps) {
+export default function OrderTicketWorkspace({ products, staff, onOrderCreated, onViewOrders, publicAccess = false }: OrderTicketWorkspaceProps) {
   const [ticketNumber, setTicketNumber] = useState(newTicketNumber);
   const [customerName, setCustomerName] = useState('');
   const [contactPerson, setContactPerson] = useState('');
@@ -263,7 +264,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       customHeight: Number(height),
       printSides,
       clientComments: notes,
-      assignedStaff,
+      assignedStaff: publicAccess ? '' : assignedStaff,
       status: 'Ingediend',
       order_type: 'opdrachtbon',
       order_number: ticketNumber,
@@ -271,23 +272,23 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       delivery_date: deliveryDate,
       delivery_method: deliveryMethod,
       delivery_address: deliveryMethod === 'Bezorgen' ? deliveryAddress.trim() : '',
-      assisted_by: assignedStaff,
-      order_status: status,
-      payment_status: totals.paymentStatus,
+      assisted_by: publicAccess ? '' : assignedStaff,
+      order_status: publicAccess ? 'Nieuw' : status,
+      payment_status: publicAccess ? 'Niet betaald' : totals.paymentStatus,
       products_json: JSON.stringify(validLines),
       subtotal: totals.subtotal,
       vat: totals.vat,
       grand_total: totals.total,
-      prepayment: totals.advance,
-      remaining: totals.remaining,
-      customer_approved: customerApproved,
+      prepayment: publicAccess ? 0 : totals.advance,
+      remaining: publicAccess ? totals.total : totals.remaining,
+      customer_approved: publicAccess ? false : customerApproved,
       notes: notes.trim(),
-      internal_notes: internalNotes.trim(),
+      internal_notes: publicAccess ? '' : internalNotes.trim(),
     };
 
     setIsSaving(true);
     try {
-      const response = await fetch('/api/admin/orders', {
+      const response = await fetch(publicAccess ? '/api/orders' : '/api/admin/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -303,7 +304,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         trackingToken: result.trackingToken,
         data: payload,
       });
-      onOrderCreated();
+      onOrderCreated?.();
     } catch (requestError) {
       console.error('Fout bij opslaan opdrachtbon:', requestError);
       setError('Er kon geen verbinding worden gemaakt met het ordersysteem. Probeer het opnieuw.');
@@ -443,7 +444,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             Nieuwe opdrachtbon
           </button>
           <button type="button" onClick={onViewOrders} className="rounded-lg border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50">
-            Naar orders overzicht
+            {publicAccess ? 'Terug naar startpagina' : 'Naar orders overzicht'}
           </button>
         </div>
         <style>{`
@@ -465,11 +466,15 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         <div className="mb-6">
           <div className="flex items-center gap-2 text-rose-700">
             <ClipboardList className="h-5 w-5" />
-            <span className="text-[10px] font-bold uppercase tracking-widest">FD Printing Center / Backoffice</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest">
+              {publicAccess ? 'FD Printing Center / Opdrachtbon' : 'FD Printing Center / Backoffice'}
+            </span>
           </div>
           <h2 className="mt-2 text-xl font-extrabold text-slate-900">Nieuwe opdrachtbon</h2>
           <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-500">
-            Leg een klantopdracht vast. Na opslaan verschijnt deze direct in het ordersysteem en krijgt de klant een trackinglink voor de status en het aanleveren van bestanden.
+            {publicAccess
+              ? 'Leg een klantopdracht vast. Na opslaan verschijnt deze direct in het backoffice ordersysteem en krijgt de klant een trackinglink.'
+              : 'Leg een klantopdracht vast. Na opslaan verschijnt deze direct in het ordersysteem en krijgt de klant een trackinglink voor de status en het aanleveren van bestanden.'}
           </p>
           <p className="mt-3 inline-flex rounded-lg bg-slate-100 px-3 py-2 font-mono text-xs font-bold text-slate-700">
             Bonnummer: {ticketNumber}
@@ -534,19 +539,23 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                     <option value="double">Dubbelzijdig</option>
                   </select>
                 </label>
-                <label className="space-y-1">
-                  <span className="block text-[10px] font-bold uppercase text-slate-500">Orderstatus</span>
-                  <select value={status} onChange={(event) => setStatus(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
-                    {ORDER_STATUSES.map((orderStatus) => <option key={orderStatus}>{orderStatus}</option>)}
-                  </select>
-                </label>
-                <label className="space-y-1 sm:col-span-2">
-                  <span className="block text-[10px] font-bold uppercase text-slate-500">Operator toewijzen</span>
-                  <select value={assignedStaff} onChange={(event) => setAssignedStaff(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
-                    <option value="">Geen operator toegewezen</option>
-                    {staff.map((member) => <option key={member.id} value={member.name}>{member.name} ({member.role})</option>)}
-                  </select>
-                </label>
+                {!publicAccess && (
+                  <>
+                    <label className="space-y-1">
+                      <span className="block text-[10px] font-bold uppercase text-slate-500">Orderstatus</span>
+                      <select value={status} onChange={(event) => setStatus(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
+                        {ORDER_STATUSES.map((orderStatus) => <option key={orderStatus}>{orderStatus}</option>)}
+                      </select>
+                    </label>
+                    <label className="space-y-1 sm:col-span-2">
+                      <span className="block text-[10px] font-bold uppercase text-slate-500">Operator toewijzen</span>
+                      <select value={assignedStaff} onChange={(event) => setAssignedStaff(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
+                        <option value="">Geen operator toegewezen</option>
+                        {staff.map((member) => <option key={member.id} value={member.name}>{member.name} ({member.role})</option>)}
+                      </select>
+                    </label>
+                  </>
+                )}
               </div>
             </section>
 
@@ -579,14 +588,18 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 ))}
               </div>
               <div className="grid gap-4 border-t border-slate-200 pt-4 sm:grid-cols-2">
-                <label className="space-y-1">
-                  <span className="block text-[10px] font-bold uppercase text-slate-500">Aanbetaling (€)</span>
-                  <input inputMode="decimal" value={prepayment} onChange={(event) => setPrepayment(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800" />
-                </label>
-                <label className="flex items-center gap-2 self-end rounded-lg border border-slate-200 bg-white p-3">
-                  <input type="checkbox" checked={customerApproved} onChange={(event) => setCustomerApproved(event.target.checked)} className="h-4 w-4 accent-rose-700" />
-                  <span className="font-medium text-slate-700">Klantakkoord ontvangen</span>
-                </label>
+                {!publicAccess && (
+                  <>
+                    <label className="space-y-1">
+                      <span className="block text-[10px] font-bold uppercase text-slate-500">Aanbetaling (€)</span>
+                      <input inputMode="decimal" value={prepayment} onChange={(event) => setPrepayment(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800" />
+                    </label>
+                    <label className="flex items-center gap-2 self-end rounded-lg border border-slate-200 bg-white p-3">
+                      <input type="checkbox" checked={customerApproved} onChange={(event) => setCustomerApproved(event.target.checked)} className="h-4 w-4 accent-rose-700" />
+                      <span className="font-medium text-slate-700">Klantakkoord ontvangen</span>
+                    </label>
+                  </>
+                )}
                 <div className="space-y-1 text-right text-xs text-slate-600 sm:col-span-2">
                   <p>Subtotaal: <strong>{money(totals.subtotal)}</strong></p>
                   <p>BTW (21%): <strong>{money(totals.vat)}</strong></p>
@@ -625,10 +638,12 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 <span className="block text-[10px] font-bold uppercase text-slate-500">Opmerking voor de klant</span>
                 <textarea maxLength={2000} rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Aanvullende informatie voor de klant" className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800" />
               </label>
-              <label className="block space-y-1">
-                <span className="block text-[10px] font-bold uppercase text-slate-500">Interne opmerkingen</span>
-                <textarea maxLength={2000} rows={3} value={internalNotes} onChange={(event) => setInternalNotes(event.target.value)} placeholder="Bijvoorbeeld: sneldruk gewenst." className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800" />
-              </label>
+              {!publicAccess && (
+                <label className="block space-y-1">
+                  <span className="block text-[10px] font-bold uppercase text-slate-500">Interne opmerkingen</span>
+                  <textarea maxLength={2000} rows={3} value={internalNotes} onChange={(event) => setInternalNotes(event.target.value)} placeholder="Bijvoorbeeld: sneldruk gewenst." className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800" />
+                </label>
+              )}
             </section>
           </div>
 

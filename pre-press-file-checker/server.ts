@@ -536,7 +536,32 @@ async function startServer() {
   });
 
   app.post("/api/orders", rateLimit(10), (req, res) => {
-    const { orderData } = req.body;
+    const orderData = req.body?.orderData;
+    if (orderData?.order_type === "opdrachtbon") {
+      if (
+        typeof orderData.order_number !== "string" ||
+        typeof orderData.products_json !== "string" ||
+        typeof orderData.grand_total !== "number" ||
+        !Number.isFinite(orderData.grand_total)
+      ) {
+        return res.status(400).json({ error: "Invalid order data." });
+      }
+
+      const ticketOrder = {
+        ...orderData,
+        order_status: "Nieuw",
+        payment_status: "Niet betaald",
+        prepayment: 0,
+        remaining: orderData.grand_total,
+        customer_approved: false,
+        assisted_by: "",
+        internal_notes: "",
+      };
+      const order = createOrder(ticketOrder, undefined, true);
+      if (!order) return res.status(400).json({ error: "Invalid order data." });
+      return res.status(201).json({ success: true, orderId: order.id, trackingToken: order.trackingToken });
+    }
+
     const order = createOrder(orderData);
     if (!order) return res.status(400).json({ error: "Invalid order data." });
     return res.status(201).json({ success: true, orderId: order.id, trackingToken: order.trackingToken });

@@ -170,7 +170,7 @@ export default function App() {
   const [prototypeOverride, setPrototypeOverride] = useState<PrototypeStateOverride>('auto');
 
   // New Full-Stack Backoffice & Customer Details states
-  const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin'>('landing');
+  const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin' | 'ticket'>('landing');
   useEffect(() => {
     setActivePortal(() =>
     isOrdersRoute
@@ -192,7 +192,7 @@ export default function App() {
   const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [adminCategoryFilter, setAdminCategoryFilter] = useState<string>('All');
-  const [adminSubTab, setAdminSubTab] = useState<'files' | 'orders' | 'staff' | 'create_order' | 'ticket'>('files');
+  const [adminSubTab, setAdminSubTab] = useState<'files' | 'orders' | 'staff' | 'create_order'>('files');
   const [selectedFileKeys, setSelectedFileKeys] = useState<string[]>([]);
   const [previewFile, setPreviewFile] = useState<any | null>(null);
 
@@ -2041,7 +2041,7 @@ export default function App() {
           </div>
 
           {/* Dual-Card Menu Options */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto pt-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto pt-4">
             {/* 1. KLANTPORTAAL CARD */}
             <motion.div 
               whileHover={{ scale: 1.02, y: -4 }}
@@ -2167,6 +2167,43 @@ export default function App() {
                 </div>
               </a>
             </motion.div>
+
+            {/* 4. OPDRACHTBON CARD */}
+            <motion.div
+              whileHover={{ scale: 1.02, y: -4 }}
+              whileTap={{ scale: 0.98 }}
+              className="h-full"
+            >
+              <button
+                type="button"
+                onClick={() => setActivePortal('ticket')}
+                className="w-full h-full text-left bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-rose-500/60 rounded-3xl p-8 flex flex-col justify-between gap-6 cursor-pointer transition-all duration-300 shadow-xl group hover:shadow-rose-500/5 relative overflow-hidden"
+              >
+                <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/5 rounded-full blur-2xl group-hover:bg-rose-500/10 transition-colors"></div>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="p-3 bg-rose-500/10 text-rose-400 border border-rose-500/25 rounded-2xl">
+                      <ClipboardList className="w-6 h-6" />
+                    </div>
+                    <span className="text-[10px] uppercase font-bold tracking-widest text-rose-400 bg-rose-500/10 border border-rose-500/20 px-2.5 py-1 rounded-full">
+                      Opdracht
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <h3 className="font-extrabold text-lg sm:text-xl text-white group-hover:text-rose-400 transition-colors">
+                      Opdrachtbon
+                    </h3>
+                    <p className="text-xs text-slate-400 leading-relaxed font-sans">
+                      Maak direct een nieuwe opdrachtbon aan. De opdracht verschijnt na opslaan in het backoffice ordersysteem.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-4 border-t border-slate-800/80 w-full text-xs font-bold text-rose-400 group-hover:text-rose-300 transition-colors">
+                  <span>Nieuwe opdrachtbon openen</span>
+                  <span className="text-sm transform group-hover:translate-x-1.5 transition-transform">&rarr;</span>
+                </div>
+              </button>
+            </motion.div>
           </div>
         </main>
 
@@ -2193,6 +2230,33 @@ export default function App() {
             </button>
           </div>
         </footer>
+      </div>
+    );
+  }
+
+  if (activePortal === 'ticket') {
+    return (
+      <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
+        <header className="border-b border-slate-200 bg-white">
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
+            <FDLogo />
+            <button
+              type="button"
+              onClick={() => setActivePortal('landing')}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-50"
+            >
+              &larr; Terug naar startpagina
+            </button>
+          </div>
+        </header>
+        <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+          <OrderTicketWorkspace
+            products={STANDARD_PRODUCTS}
+            staff={[]}
+            onViewOrders={() => setActivePortal('landing')}
+            publicAccess
+          />
+        </main>
       </div>
     );
   }
@@ -2843,20 +2907,6 @@ export default function App() {
                   >
                     <PlusCircle className="w-3.5 h-3.5 text-rose-500" />
                     <span className="text-slate-650 font-bold">Handmatige Opdracht</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setAdminSubTab('ticket');
-                      fetchAdminStaff();
-                    }}
-                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 focus:outline-hidden ${
-                      adminSubTab === 'ticket'
-                        ? 'bg-rose-700 text-white shadow-xs font-extrabold'
-                        : 'text-slate-600 hover:text-slate-800 hover:bg-slate-50 border border-transparent hover:border-slate-200'
-                    }`}
-                  >
-                    <ClipboardList className="w-3.5 h-3.5 text-rose-500" />
-                    <span className="font-bold">Opdrachtbon</span>
                   </button>
                 </div>
 
@@ -3955,13 +4005,6 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-            ) : adminSubTab === 'ticket' ? (
-              <OrderTicketWorkspace
-                products={STANDARD_PRODUCTS}
-                staff={staffList}
-                onOrderCreated={fetchAdminOrders}
-                onViewOrders={() => setAdminSubTab('orders')}
-              />
             ) : (
                 /* CREATE MANUAL ORDER WORKSPACE VIEW */
                 <div className="space-y-6 animate-fade-in font-sans">
