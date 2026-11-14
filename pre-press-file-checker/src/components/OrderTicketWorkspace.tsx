@@ -11,6 +11,11 @@ interface TicketStaff {
 
 interface TicketLine {
   description: string;
+  productId: string;
+  category: string;
+  width: string;
+  height: string;
+  printSides: 'single' | 'double';
   quantity: string;
   price: string;
 }
@@ -27,6 +32,15 @@ interface CreatedTicket {
   id: string;
   trackingToken: string;
   data: Record<string, unknown>;
+  productUploadLinks: Array<{
+    id: string;
+    uploadToken: string;
+    description: string;
+    quantity: number;
+    widthMm: number;
+    heightMm: number;
+    printSides: 'single' | 'double';
+  }>;
 }
 
 const ORDER_STATUSES = [
@@ -41,9 +55,14 @@ const ORDER_STATUSES = [
   'Geannuleerd',
 ];
 
-const emptyLine = (description = ''): TicketLine => ({
-  description,
-  quantity: '100',
+const emptyLine = (product?: PrintProduct, quantity = '100'): TicketLine => ({
+  description: product?.name ?? '',
+  productId: product?.id ?? '',
+  category: product?.category ?? '',
+  width: String(product?.widthMm ?? 210),
+  height: String(product?.heightMm ?? 297),
+  printSides: 'single',
+  quantity,
   price: '',
 });
 
@@ -66,7 +85,7 @@ function newTicketNumber() {
   return `OB-${date}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
-function TicketQr({ value }: { value: string }) {
+function TicketQr({ value, label }: { value: string; label: string }) {
   const [source, setSource] = useState('');
   const [error, setError] = useState('');
 
@@ -86,7 +105,7 @@ function TicketQr({ value }: { value: string }) {
 
   if (error) return <p className="text-xs text-amber-700">{error}</p>;
   if (!source) return <div className="w-36 h-36 rounded-xl bg-slate-100 animate-pulse" aria-label="QR-code wordt gemaakt" />;
-  return <img src={source} alt="QR-code voor ordertracking" className="w-36 h-36 object-contain" />;
+  return <img src={source} alt={`Uploadcode voor ${label}`} className="h-28 w-28 object-contain" />;
 }
 
 export default function OrderTicketWorkspace({ products, staff, onOrderCreated, onViewOrders, publicAccess = false }: OrderTicketWorkspaceProps) {
@@ -96,11 +115,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [reference, setReference] = useState('');
-  const [selectedProduct, setSelectedProduct] = useState(products[0]);
-  const [width, setWidth] = useState(products[0]?.widthMm ?? 210);
-  const [height, setHeight] = useState(products[0]?.heightMm ?? 297);
-  const [printSides, setPrintSides] = useState<'single' | 'double'>('single');
-  const [lines, setLines] = useState<TicketLine[]>([emptyLine(products[0]?.name ?? '')]);
+  const [lines, setLines] = useState<TicketLine[]>([emptyLine(products[0])]);
   const [deliveryDate, setDeliveryDate] = useState('');
   const [deliveryMethod, setDeliveryMethod] = useState<'Afhalen' | 'Bezorgen'>('Afhalen');
   const [deliveryAddress, setDeliveryAddress] = useState('');
@@ -128,6 +143,8 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       const filled = Boolean(description || priceText);
       const parsedQuantity = quantityText ? Number(quantityText) : null;
       const parsedPrice = parseAmount(priceText);
+      const parsedWidth = Number(line.width);
+      const parsedHeight = Number(line.height);
       if (filled && (!description || !quantityText || !priceText)) incomplete = true;
       if (filled && (
         parsedQuantity === null ||
@@ -136,7 +153,13 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         parsedPrice === null ||
         !Number.isFinite(parsedPrice) ||
         parsedPrice < 0 ||
-        parsedPrice > 100000
+        parsedPrice > 100000 ||
+        !Number.isFinite(parsedWidth) ||
+        parsedWidth <= 0 ||
+        parsedWidth > 100000 ||
+        !Number.isFinite(parsedHeight) ||
+        parsedHeight <= 0 ||
+        parsedHeight > 100000
       )) invalid = true;
       if (
         filled &&
@@ -183,33 +206,30 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
     ? `${window.location.origin}/klantportal?token=${encodeURIComponent(createdTicket.trackingToken)}`
     : '';
 
-  const handleProductChange = (productId: string) => {
+  const handleProductChange = (lineIndex: number, productId: string) => {
     const product = products.find((entry) => entry.id === productId);
     if (!product) return;
-    setSelectedProduct(product);
-    setWidth(product.widthMm);
-    setHeight(product.heightMm);
-    setLines((current) => current.map((line, index) => (
-      index === 0 && (!line.description || products.some((entry) => entry.name === line.description))
-        ? { ...line, description: product.name }
-        : line
-    )));
-    if (product.category === 'Sticker') setPrintSides('single');
+    setLines((current) => current.map((line, index) => index === lineIndex
+      ? {
+          ...line,
+          productId: product.id,
+          category: product.category,
+          description: product.name,
+          width: String(product.widthMm),
+          height: String(product.heightMm),
+          printSides: product.category === 'Sticker' ? 'single' : line.printSides,
+        }
+      : line));
   };
 
   const resetForm = () => {
-    const defaultProduct = products[0];
     setTicketNumber(newTicketNumber());
     setCustomerName('');
     setContactPerson('');
     setEmail('');
     setPhone('');
     setReference('');
-    setSelectedProduct(defaultProduct);
-    setWidth(defaultProduct?.widthMm ?? 210);
-    setHeight(defaultProduct?.heightMm ?? 297);
-    setPrintSides('single');
-    setLines([emptyLine(defaultProduct?.name ?? '')]);
+    setLines([emptyLine(products[0])]);
     setDeliveryDate('');
     setDeliveryMethod('Afhalen');
     setDeliveryAddress('');
@@ -230,6 +250,11 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       .filter((line) => line.description.trim() || line.price.trim())
       .map((line) => ({
         description: line.description.trim(),
+        productId: line.productId,
+        category: line.category,
+        widthMm: Number(line.width),
+        heightMm: Number(line.height),
+        printSides: line.category === 'Sticker' ? 'single' : line.printSides,
         quantity: Number(line.quantity),
         unitPrice: parseAmount(line.price) ?? Number.NaN,
       }));
@@ -242,27 +267,24 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       setError('Vul een geldige aanbetaling in die niet hoger is dan het ordertotaal.');
       return;
     }
-    if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
-      setError('Vul een geldige breedte en hoogte in.');
-      return;
-    }
     if (deliveryMethod === 'Bezorgen' && !deliveryAddress.trim()) {
       setError('Vul het afleveradres in voor bezorging.');
       return;
     }
 
+    const primaryLine = validLines[0];
     const payload = {
       clientName: customerName.trim(),
       clientEmail: email.trim(),
       clientPhone: phone.trim() || '-',
       clientReference: reference.trim(),
       clientQuantity: totals.quantity,
-      selectedProductId: selectedProduct.id,
-      selectedProductName: selectedProduct.name,
-      selectedProductCategory: selectedProduct.category,
-      customWidth: Number(width),
-      customHeight: Number(height),
-      printSides,
+      selectedProductId: primaryLine.productId,
+      selectedProductName: primaryLine.description,
+      selectedProductCategory: primaryLine.category,
+      customWidth: primaryLine.widthMm,
+      customHeight: primaryLine.heightMm,
+      printSides: primaryLine.printSides,
       clientComments: notes,
       assignedStaff: publicAccess ? '' : assignedStaff,
       status: 'Ingediend',
@@ -303,6 +325,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         id: result.orderId,
         trackingToken: result.trackingToken,
         data: payload,
+        productUploadLinks: Array.isArray(result.productUploadLinks) ? result.productUploadLinks : [],
       });
       onOrderCreated?.();
     } catch (requestError) {
@@ -330,26 +353,42 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       '',
       `Hierbij de gegevens van opdrachtbon ${String(createdTicket.data.order_number)}.`,
       '',
-      ...linesForEmail.map((line) => `${line.quantity}x ${line.description} — ${money(Number(line.unitPrice) * line.quantity)}`),
+      ...linesForEmail.flatMap((line, index) => {
+        const upload = createdTicket.productUploadLinks[index];
+        const uploadUrl = upload
+          ? `${window.location.origin}/klantportal?token=${encodeURIComponent(upload.uploadToken)}`
+          : '';
+        return [
+          `${line.quantity}x ${line.description} — ${money(Number(line.unitPrice) * line.quantity)}`,
+          ...(uploadUrl ? [`Upload bestanden voor dit product: ${uploadUrl}`] : []),
+        ];
+      }),
       '',
       `Totaal incl. btw: ${money(Number(createdTicket.data.grand_total))}`,
       `Aanbetaling: ${money(Number(createdTicket.data.prepayment))}`,
       `Openstaand: ${money(Number(createdTicket.data.remaining))}`,
       '',
-      `Volg uw opdracht en lever bestanden aan via: ${trackingUrl}`,
+      `Volg de status van uw opdracht via: ${trackingUrl}`,
     ].join('\n');
     window.location.href = `mailto:${encodeURIComponent(String(createdTicket.data.clientEmail))}?subject=${encodeURIComponent(`Opdrachtbon ${createdTicket.data.order_number} · FD Printing Center`)}&body=${encodeURIComponent(emailBody)}`;
   };
 
   if (createdTicket) {
     const ticketData = createdTicket.data;
-    const orderLines = JSON.parse(String(ticketData.products_json)) as Array<{ description: string; quantity: number; unitPrice: number }>;
+    const orderLines = JSON.parse(String(ticketData.products_json)) as Array<{
+      description: string;
+      quantity: number;
+      unitPrice: number;
+      widthMm?: number;
+      heightMm?: number;
+      printSides?: 'single' | 'double';
+    }>;
     return (
       <div className="space-y-5 animate-fade-in font-sans">
         <div className="no-print flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-extrabold text-slate-900">Opdrachtbon aangemaakt</h3>
-            <p className="mt-1 text-xs text-slate-500">De bon staat nu in het ordersysteem en kan met de klant worden gedeeld.</p>
+            <p className="mt-1 text-xs text-slate-500">De bon staat in het ordersysteem. Iedere productregel heeft een eigen QR-code en uploadlink.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={emailTicket} className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-800">
@@ -374,7 +413,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             </div>
           </header>
 
-          <div className="grid gap-6 p-5 sm:grid-cols-[1fr_auto] sm:p-8">
+          <div className="p-5 sm:p-8">
             <div className="space-y-6">
               <section className="grid gap-5 rounded-xl bg-slate-50 p-5 sm:grid-cols-2">
                 <div>
@@ -390,7 +429,6 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                   <p className="text-sm text-slate-700">Status: <strong>{String(ticketData.order_status)}</strong></p>
                   <p className="text-sm text-slate-700">Levering: {String(ticketData.delivery_method)}{ticketData.delivery_date ? ` · ${String(ticketData.delivery_date)}` : ''}</p>
                   {ticketData.delivery_address ? <p className="text-sm text-slate-700">{String(ticketData.delivery_address)}</p> : null}
-                  <p className="text-sm text-slate-700">{String(ticketData.customWidth)} × {String(ticketData.customHeight)} mm · {ticketData.printSides === 'double' ? 'Dubbelzijdig' : 'Enkelzijdig'}</p>
                   {ticketData.assignedStaff ? <p className="text-sm text-slate-700">Operator: {String(ticketData.assignedStaff)}</p> : null}
                   <p className="text-sm text-slate-700">Klantakkoord: {ticketData.customer_approved ? 'Ontvangen' : 'Nog niet ontvangen'}</p>
                 </div>
@@ -399,14 +437,17 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
               <section>
                 <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">Productregels</h3>
                 <div className="overflow-x-auto rounded-xl border border-slate-200">
-                  <table className="w-full min-w-[440px] text-left text-sm">
+                  <table className="w-full min-w-[600px] text-left text-sm">
                     <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                      <tr><th className="p-3">Omschrijving</th><th className="p-3 text-right">Aantal</th><th className="p-3 text-right">Prijs</th><th className="p-3 text-right">Totaal</th></tr>
+                      <tr><th className="p-3">Omschrijving</th><th className="p-3">Specificaties</th><th className="p-3 text-right">Aantal</th><th className="p-3 text-right">Prijs/stuk</th><th className="p-3 text-right">Totaal</th></tr>
                     </thead>
                     <tbody>
                       {orderLines.map((line, index) => (
                         <tr key={`${line.description}-${index}`} className="border-t border-slate-100">
                           <td className="p-3 font-medium text-slate-800">{line.description}</td>
+                          <td className="p-3 text-xs text-slate-600">
+                            {String(line.widthMm ?? ticketData.customWidth)} × {String(line.heightMm ?? ticketData.customHeight)} mm · {(line.printSides ?? ticketData.printSides) === 'double' ? 'Dubbelzijdig' : 'Enkelzijdig'}
+                          </td>
                           <td className="p-3 text-right">{line.quantity}</td>
                           <td className="p-3 text-right">{money(line.unitPrice)}</td>
                           <td className="p-3 text-right font-semibold">{money(line.unitPrice * line.quantity)}</td>
@@ -416,26 +457,44 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                   </table>
                 </div>
               </section>
+              <section className="space-y-3">
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900">Uploadcodes per product</h3>
+                  <p className="mt-1 text-xs text-slate-500">Iedere QR-code en link is gekoppeld aan één product. Bestanden die via de code worden aangeleverd, verschijnen bij dat product in het backoffice.</p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {orderLines.map((line, index) => {
+                    const upload = createdTicket.productUploadLinks[index];
+                    if (!upload) return null;
+                    const uploadUrl = `${window.location.origin}/klantportal?token=${encodeURIComponent(upload.uploadToken)}`;
+                    return (
+                      <article key={upload.id} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3">
+                        <TicketQr value={uploadUrl} label={line.description} />
+                        <div className="min-w-0 space-y-1">
+                          <h4 className="break-words text-xs font-extrabold text-slate-900">{line.description}</h4>
+                          <p className="text-[10px] text-slate-500">{line.quantity} stuks · {String(line.widthMm ?? ticketData.customWidth)} × {String(line.heightMm ?? ticketData.customHeight)} mm</p>
+                          <a className="block break-all text-[10px] font-semibold text-blue-700 underline" href={uploadUrl}>{uploadUrl}</a>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+                {createdTicket.productUploadLinks.length !== orderLines.length && (
+                  <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+                    Niet voor ieder product is een uploadcode aangemaakt. Neem contact op met de beheerder voordat u de bon deelt.
+                  </p>
+                )}
+              </section>
               {ticketData.notes ? <p className="whitespace-pre-wrap text-sm text-slate-600"><strong>Opmerkingen:</strong> {String(ticketData.notes)}</p> : null}
               {ticketData.internal_notes ? <p className="no-print whitespace-pre-wrap rounded-lg bg-amber-50 p-3 text-xs text-amber-900"><strong>Interne notitie:</strong> {String(ticketData.internal_notes)}</p> : null}
             </div>
-
-            <aside className="flex flex-col items-center gap-3 rounded-xl border border-slate-200 p-4 text-center">
-              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Klantportal · status &amp; bestanden</span>
-              <TicketQr value={trackingUrl} />
-              <a className="max-w-56 break-all text-xs text-blue-700 underline" href={trackingUrl}>{trackingUrl}</a>
-              <p className="max-w-56 text-[10px] leading-relaxed text-slate-500">
-                Scan om de status te volgen en het drukbestand aan deze opdrachtbon toe te voegen.
-              </p>
-              <div className="w-full border-t border-slate-100 pt-3 text-left text-xs text-slate-600">
-                <p className="flex justify-between gap-6"><span>Subtotaal</span><span>{money(Number(ticketData.subtotal))}</span></p>
-                <p className="mt-1 flex justify-between gap-6"><span>BTW (21%)</span><span>{money(Number(ticketData.vat))}</span></p>
-                <p className="mt-2 flex justify-between gap-6 border-t border-slate-100 pt-2 font-bold text-slate-900"><span>Totaal incl. btw</span><span>{money(Number(ticketData.grand_total))}</span></p>
-                <p className="mt-1 flex justify-between gap-6"><span>Aanbetaling</span><span>{money(Number(ticketData.prepayment))}</span></p>
-                <p className="mt-1 flex justify-between gap-6 font-bold"><span>Openstaand</span><span>{money(Number(ticketData.remaining))}</span></p>
-                <p className="mt-2 text-right">{String(ticketData.payment_status)}</p>
-              </div>
-            </aside>
+            <div className="mt-6 ml-auto max-w-sm border-t border-slate-200 pt-4 text-right text-xs text-slate-600">
+              <p>Subtotaal: <strong>{money(Number(ticketData.subtotal))}</strong></p>
+              <p className="mt-1">BTW (21%): <strong>{money(Number(ticketData.vat))}</strong></p>
+              <p className="mt-2 text-base text-slate-900">Totaal incl. btw: <strong>{money(Number(ticketData.grand_total))}</strong></p>
+              <p className="mt-1">Aanbetaling: {money(Number(ticketData.prepayment))} · Openstaand: {money(Number(ticketData.remaining))}</p>
+              <p className="mt-1">{String(ticketData.payment_status)}</p>
+            </div>
           </div>
         </article>
 
@@ -511,82 +570,80 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
               </div>
             </section>
 
-            <section className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-5">
-              <h3 className="font-extrabold text-slate-800">2. Drukwerkformaat en specificaties</h3>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="space-y-1">
-                  <span className="block text-[10px] font-bold uppercase text-slate-500">Preset product</span>
-                  <select value={selectedProduct.id} onChange={(event) => handleProductChange(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
-                    {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
-                  </select>
-                </label>
-                <label className="space-y-1">
-                  <span className="block text-[10px] font-bold uppercase text-slate-500">Productnaam</span>
-                  <input readOnly value={selectedProduct.name} className="w-full rounded-lg border border-slate-200 bg-slate-100 p-2.5 text-xs text-slate-600" />
-                </label>
-                <label className="space-y-1">
-                  <span className="block text-[10px] font-bold uppercase text-slate-500">Breedte (mm)</span>
-                  <input type="number" min="1" max="100000" required value={width} onChange={(event) => setWidth(Number(event.target.value))} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800" />
-                </label>
-                <label className="space-y-1">
-                  <span className="block text-[10px] font-bold uppercase text-slate-500">Hoogte (mm)</span>
-                  <input type="number" min="1" max="100000" required value={height} onChange={(event) => setHeight(Number(event.target.value))} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800" />
-                </label>
-                <label className="space-y-1">
-                  <span className="block text-[10px] font-bold uppercase text-slate-500">Zijdigheid</span>
-                  <select disabled={selectedProduct.category === 'Sticker'} value={selectedProduct.category === 'Sticker' ? 'single' : printSides} onChange={(event) => setPrintSides(event.target.value as 'single' | 'double')} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800 disabled:bg-slate-100">
-                    <option value="single">Enkelzijdig</option>
-                    <option value="double">Dubbelzijdig</option>
-                  </select>
-                </label>
-                {!publicAccess && (
-                  <>
-                    <label className="space-y-1">
-                      <span className="block text-[10px] font-bold uppercase text-slate-500">Orderstatus</span>
-                      <select value={status} onChange={(event) => setStatus(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
-                        {ORDER_STATUSES.map((orderStatus) => <option key={orderStatus}>{orderStatus}</option>)}
-                      </select>
-                    </label>
-                    <label className="space-y-1 sm:col-span-2">
-                      <span className="block text-[10px] font-bold uppercase text-slate-500">Operator toewijzen</span>
-                      <select value={assignedStaff} onChange={(event) => setAssignedStaff(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
-                        <option value="">Geen operator toegewezen</option>
-                        {staff.map((member) => <option key={member.id} value={member.name}>{member.name} ({member.role})</option>)}
-                      </select>
-                    </label>
-                  </>
-                )}
-              </div>
-            </section>
-
             <section className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-5 lg:col-span-2">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h3 className="font-extrabold text-slate-800">3. Productregels en kosten</h3>
-                <button type="button" onClick={() => setLines((current) => [...current, { description: '', quantity: '1', price: '' }])} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-bold text-slate-700 hover:bg-slate-100">
-                  <Plus className="h-3.5 w-3.5" /> Productregel toevoegen
+                <div>
+                  <h3 className="font-extrabold text-slate-800">2. Producten, specificaties &amp; kosten</h3>
+                  <p className="mt-1 text-[11px] text-slate-500">Vul per product de specificaties, oplage en prijs in.</p>
+                </div>
+                <button type="button" onClick={() => setLines((current) => [...current, emptyLine(products[0], '1')])} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-bold text-slate-700 hover:bg-slate-100">
+                  <Plus className="h-3.5 w-3.5" /> Product toevoegen
                 </button>
               </div>
               <div className="space-y-3">
                 {lines.map((line, index) => (
-                  <div key={index} className="grid gap-2 rounded-lg border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,1fr)_110px_150px_40px] sm:items-end">
-                    <label className="space-y-1">
-                      <span className="block text-[10px] font-bold uppercase text-slate-500">Omschrijving</span>
-                      <input maxLength={2000} value={line.description} onChange={(event) => setLines((current) => current.map((entry, row) => row === index ? { ...entry, description: event.target.value } : entry))} placeholder="Product / omschrijving" className="w-full rounded-lg border border-slate-200 p-2.5 text-xs text-slate-800" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="block text-[10px] font-bold uppercase text-slate-500">Aantal</span>
-                      <input type="number" min="1" max="100000" step="1" value={line.quantity} onChange={(event) => setLines((current) => current.map((entry, row) => row === index ? { ...entry, quantity: event.target.value } : entry))} className="w-full rounded-lg border border-slate-200 p-2.5 text-xs text-slate-800" />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="block text-[10px] font-bold uppercase text-slate-500">Prijs per stuk (€)</span>
-                      <input inputMode="decimal" value={line.price} onChange={(event) => setLines((current) => current.map((entry, row) => row === index ? { ...entry, price: event.target.value } : entry))} placeholder="0,00" className="w-full rounded-lg border border-slate-200 p-2.5 text-xs text-slate-800" />
-                    </label>
-                    <button type="button" aria-label={`Productregel ${index + 1} verwijderen`} disabled={lines.length === 1} onClick={() => setLines((current) => current.filter((_, row) => row !== index))} className="flex h-9 items-center justify-center rounded-lg border border-slate-200 text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40">
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
+                  <article key={index} className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <h4 className="text-xs font-extrabold text-slate-800">Product {index + 1}</h4>
+                      <button type="button" aria-label={`Product ${index + 1} verwijderen`} disabled={lines.length === 1} onClick={() => setLines((current) => current.filter((_, row) => row !== index))} className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase text-slate-500">Preset product</span>
+                        <select value={line.productId} onChange={(event) => handleProductChange(index, event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
+                          {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+                        </select>
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase text-slate-500">Productnaam</span>
+                        <input required maxLength={2000} value={line.description} onChange={(event) => setLines((current) => current.map((entry, row) => row === index ? { ...entry, description: event.target.value } : entry))} placeholder="Product / omschrijving" className="w-full rounded-lg border border-slate-200 p-2.5 text-xs text-slate-800" />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase text-slate-500">Breedte (mm)</span>
+                        <input type="number" min="1" max="100000" required value={line.width} onChange={(event) => setLines((current) => current.map((entry, row) => row === index ? { ...entry, width: event.target.value } : entry))} className="w-full rounded-lg border border-slate-200 p-2.5 text-xs text-slate-800" />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase text-slate-500">Hoogte (mm)</span>
+                        <input type="number" min="1" max="100000" required value={line.height} onChange={(event) => setLines((current) => current.map((entry, row) => row === index ? { ...entry, height: event.target.value } : entry))} className="w-full rounded-lg border border-slate-200 p-2.5 text-xs text-slate-800" />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase text-slate-500">Zijdigheid</span>
+                        <select disabled={line.category === 'Sticker'} value={line.category === 'Sticker' ? 'single' : line.printSides} onChange={(event) => setLines((current) => current.map((entry, row) => row === index ? { ...entry, printSides: event.target.value as 'single' | 'double' } : entry))} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800 disabled:bg-slate-100">
+                          <option value="single">Enkelzijdig</option>
+                          <option value="double">Dubbelzijdig</option>
+                        </select>
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase text-slate-500">Aantal</span>
+                        <input type="number" min="1" max="100000" step="1" required value={line.quantity} onChange={(event) => setLines((current) => current.map((entry, row) => row === index ? { ...entry, quantity: event.target.value } : entry))} className="w-full rounded-lg border border-slate-200 p-2.5 text-xs text-slate-800" />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="block text-[10px] font-bold uppercase text-slate-500">Prijs per stuk (€)</span>
+                        <input required inputMode="decimal" value={line.price} onChange={(event) => setLines((current) => current.map((entry, row) => row === index ? { ...entry, price: event.target.value } : entry))} placeholder="0,00" className="w-full rounded-lg border border-slate-200 p-2.5 text-xs text-slate-800" />
+                      </label>
+                    </div>
+                  </article>
                 ))}
               </div>
+              {!publicAccess && (
+                <div className="grid gap-3 border-t border-slate-200 pt-4 sm:grid-cols-2">
+                  <label className="space-y-1">
+                    <span className="block text-[10px] font-bold uppercase text-slate-500">Orderstatus</span>
+                    <select value={status} onChange={(event) => setStatus(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
+                      {ORDER_STATUSES.map((orderStatus) => <option key={orderStatus}>{orderStatus}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="block text-[10px] font-bold uppercase text-slate-500">Operator toewijzen</span>
+                    <select value={assignedStaff} onChange={(event) => setAssignedStaff(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800">
+                      <option value="">Geen operator toegewezen</option>
+                      {staff.map((member) => <option key={member.id} value={member.name}>{member.name} ({member.role})</option>)}
+                    </select>
+                  </label>
+                </div>
+              )}
               <div className="grid gap-4 border-t border-slate-200 pt-4 sm:grid-cols-2">
                 {!publicAccess && (
                   <>
@@ -610,7 +667,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             </section>
 
             <section className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-5">
-              <h3 className="font-extrabold text-slate-800">4. Levering</h3>
+              <h3 className="font-extrabold text-slate-800">3. Levering</h3>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-1">
                   <span className="block text-[10px] font-bold uppercase text-slate-500">Gewenste leverdatum</span>
@@ -633,7 +690,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             </section>
 
             <section className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-5">
-              <h3 className="font-extrabold text-slate-800">5. Opmerkingen</h3>
+              <h3 className="font-extrabold text-slate-800">4. Opmerkingen</h3>
               <label className="block space-y-1">
                 <span className="block text-[10px] font-bold uppercase text-slate-500">Opmerking voor de klant</span>
                 <textarea maxLength={2000} rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Aanvullende informatie voor de klant" className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-800" />

@@ -262,20 +262,37 @@ async function startServer() {
     return result;
   }
 
-  function serializePublicOrder(order: any) {
+  function serializePublicOrder(order: any, productUpload?: any) {
     const result: Record<string, unknown> = {};
     publicOrderFields.forEach((field) => {
       if (field in order) result[field] = order[field];
     });
-    result.hasDesignFile = Boolean(order.imageSrcUrl);
-    result.customerFiles = (Array.isArray(order.customerFiles) ? order.customerFiles : []).map((file: any) => ({
+    const customerFiles = (Array.isArray(order.customerFiles) ? order.customerFiles : [])
+      .filter((file: any) => !productUpload || file.productLineId === productUpload.id);
+    result.customerFiles = customerFiles.map((file: any) => ({
       id: file.id,
       fileName: file.fileName,
       fileType: file.fileType,
       size: file.size,
       side: file.side,
+      productName: file.productName,
+      productQuantity: file.productQuantity,
       uploadedAt: file.uploadedAt
     }));
+    if (productUpload) {
+      result.orderNumber = order.order_number;
+      result.productUpload = {
+        id: productUpload.id,
+        description: productUpload.description,
+        quantity: productUpload.quantity,
+        widthMm: productUpload.widthMm,
+        heightMm: productUpload.heightMm,
+        printSides: productUpload.printSides
+      };
+      return result;
+    }
+
+    result.hasDesignFile = Boolean(order.imageSrcUrl);
     result.history = (Array.isArray(order.history) ? order.history : []).slice(-30).map((entry: any) => ({
       date: entry.date,
       status: String(entry.status || "").slice(0, 100),
@@ -382,8 +399,31 @@ async function startServer() {
           typeof product.unitPrice !== "number" ||
           !Number.isFinite(product.unitPrice) ||
           product.unitPrice < 0 ||
-          product.unitPrice > 100000
+          product.unitPrice > 100000 ||
+          typeof product.productId !== "string" ||
+          product.productId.length > 100 ||
+          typeof product.category !== "string" ||
+          product.category.length > 100 ||
+          typeof product.widthMm !== "number" ||
+          !Number.isFinite(product.widthMm) ||
+          product.widthMm <= 0 ||
+          product.widthMm > 100000 ||
+          typeof product.heightMm !== "number" ||
+          !Number.isFinite(product.heightMm) ||
+          product.heightMm <= 0 ||
+          product.heightMm > 100000 ||
+          !["single", "double"].includes(product.printSides)
         )) return null;
+        safeData.products_json = JSON.stringify(products.map((product: any) => ({
+          description: product.description.trim(),
+          productId: product.productId,
+          category: product.category,
+          widthMm: product.widthMm,
+          heightMm: product.heightMm,
+          printSides: product.printSides,
+          quantity: product.quantity,
+          unitPrice: product.unitPrice
+        })));
       } catch {
         return null;
       }
@@ -397,6 +437,25 @@ async function startServer() {
   function createOrder(data: any, assignedStaff?: string, allowTicketFields = false) {
     const safeData = sanitizeOrderData(data, allowTicketFields);
     if (!safeData) return null;
+
+    let productUploadLinks: any[] = [];
+    if (safeData.order_type === "opdrachtbon" && typeof safeData.products_json === "string") {
+      const products = JSON.parse(safeData.products_json).map((product: any) => ({
+        ...product,
+        id: crypto.randomBytes(12).toString("hex"),
+        uploadToken: crypto.randomBytes(24).toString("hex")
+      }));
+      safeData.products_json = JSON.stringify(products);
+      productUploadLinks = products.map(({ id, uploadToken, description, quantity, widthMm, heightMm, printSides }: any) => ({
+        id,
+        uploadToken,
+        description,
+        quantity,
+        widthMm,
+        heightMm,
+        printSides
+      }));
+    }
 
     const now = new Date().toISOString();
     const order = {
@@ -528,11 +587,22 @@ async function startServer() {
       return res.status(404).json({ error: "Order not found." });
     }
     const orders = loadOrders();
-    const order = orders.find((o: any) => o.trackingToken === req.params.trackingToken);
+    const order = orders.find((item: any) => item.trackingToken === req.params.trackingToken)
+      || orders.find((item: any) => {
+        if (item.order_type !== "opdrachtbon" || typeof item.products_json !== "string") return false;
+        try {
+          return JSON.parse(item.products_json).some((product: any) => product.uploadToken === req.params.trackingToken);
+        } catch {
+          return false;
+        }
+      });
     if (!order) {
       return res.status(404).json({ error: "Order not found." });
     }
-    return res.json(serializePublicOrder(order));
+    const productUpload = order.trackingToken === req.params.trackingToken
+      ? undefined
+      : JSON.parse(String(order.products_json)).find((product: any) => product.uploadToken === req.params.trackingToken);
+    return res.json(serializePublicOrder(order, productUpload));
   });
 
   app.post("/api/orders", rateLimit(10), (req, res) => {
@@ -559,7 +629,12 @@ async function startServer() {
       };
       const order = createOrder(ticketOrder, undefined, true);
       if (!order) return res.status(400).json({ error: "Invalid order data." });
-      return res.status(201).json({ success: true, orderId: order.id, trackingToken: order.trackingToken });
+      return res.status(201).json({
+        success: true,
+        orderId: order.id,
+        trackingToken: order.trackingToken,
+        productUploadLinks: order.productUploadLinks
+      });
     }
 
     const order = createOrder(orderData);
@@ -574,7 +649,12 @@ async function startServer() {
     if (!staffExists) return res.status(400).json({ error: "Invalid staff assignment." });
     const order = createOrder(orderData, assignedStaff || undefined, true);
     if (!order) return res.status(400).json({ error: "Invalid order data." });
-    return res.status(201).json({ success: true, orderId: order.id, trackingToken: order.trackingToken });
+    return res.status(201).json({
+      success: true,
+      orderId: order.id,
+      trackingToken: order.trackingToken,
+      productUploadLinks: order.productUploadLinks
+    });
   });
 
   app.put("/api/orders/:id", requireAdmin, (req, res) => {
@@ -612,6 +692,65 @@ async function startServer() {
 
     saveOrders(orders);
     return res.json({ success: true, order: serializeAdminOrder(orders[idx]) });
+  });
+
+  app.post("/api/public/orders/:uploadToken/product-files", rateLimit(10), (req, res) => {
+    const uploadToken = req.params.uploadToken;
+    if (!/^[a-f0-9]{48}$/.test(uploadToken)) {
+      return res.status(404).json({ error: "Product upload link not found." });
+    }
+
+    const orders = loadOrders();
+    let order: any;
+    let productUpload: any;
+    for (const candidate of orders) {
+      if (candidate.order_type !== "opdrachtbon" || typeof candidate.products_json !== "string") continue;
+      try {
+        const product = JSON.parse(candidate.products_json).find((item: any) => item.uploadToken === uploadToken);
+        if (product) {
+          order = candidate;
+          productUpload = product;
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (!order || !productUpload) {
+      return res.status(404).json({ error: "Product upload link not found." });
+    }
+
+    const file = validateCustomerFile(req.body?.file);
+    if (!file) {
+      return res.status(400).json({ error: "Upload een geldig PDF-, PNG- of JPG-bestand van maximaal 4 MB." });
+    }
+    const customerFiles = Array.isArray(order.customerFiles) ? order.customerFiles : [];
+    if (customerFiles.filter((item: any) => item.productLineId === productUpload.id).length >= 20) {
+      return res.status(400).json({ error: "Voor dit product zijn al 20 bestanden ontvangen." });
+    }
+
+    const uploadedFile = {
+      id: crypto.randomBytes(12).toString("hex"),
+      ...file,
+      side: "product",
+      productLineId: productUpload.id,
+      productName: productUpload.description,
+      productQuantity: productUpload.quantity,
+      uploadedAt: new Date().toISOString()
+    };
+    order.customerFiles = [...customerFiles, uploadedFile];
+    order.status = "Bestanden Ontvangen";
+    order.history = Array.isArray(order.history) ? order.history : [];
+    order.history.push({
+      date: uploadedFile.uploadedAt,
+      status: "Bestanden Ontvangen",
+      note: `Klant heeft ${file.fileName} aangeleverd voor ${productUpload.description} (${productUpload.quantity} stuks).`
+    });
+    saveOrders(orders.map((item: any) => item.id === order.id ? order : item));
+    return res.json({
+      success: true,
+      order: serializePublicOrder(order, productUpload)
+    });
   });
 
   app.post("/api/public/orders/:trackingToken/update-file", rateLimit(10), (req, res) => {

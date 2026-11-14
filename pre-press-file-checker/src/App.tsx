@@ -47,6 +47,7 @@ import LiveFilePreview from './components/LiveFilePreview';
 import { FDLogo } from './components/FDLogo';
 import { renderPdfFile } from './utils/pdfLoader';
 import OrderTicketWorkspace from './components/OrderTicketWorkspace';
+import TicketProductUploadPortal from './components/TicketProductUploadPortal';
 
 function TrackingQr({ value, size = 150 }: { value: string; size?: number }) {
   const [src, setSrc] = useState<string>('');
@@ -1449,6 +1450,20 @@ export default function App() {
     }
 
     const o = trackedOrder;
+    if (o.productUpload) {
+      return (
+        <TicketProductUploadPortal
+          token={trackedOrderId || ''}
+          orderNumber={String(o.orderNumber || '')}
+          product={o.productUpload}
+          files={Array.isArray(o.customerFiles) ? o.customerFiles : []}
+          onUploadComplete={() => {
+            if (trackedOrderId) void fetchTrackedOrder(trackedOrderId);
+          }}
+        />
+      );
+    }
+
     const isActionRequired = o.status?.toLowerCase().includes('actie') || o.status?.toLowerCase().includes('afgekeurd');
 
     // Stepper logic
@@ -1858,7 +1873,7 @@ export default function App() {
                   {o.customerFiles.map((file: any) => (
                     <li key={file.id} className="flex flex-wrap justify-between gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-slate-700">
                       <span className="font-semibold break-all">{file.fileName}</span>
-                      <span>{file.side === 'back' ? 'Achterzijde' : 'Voorzijde'} · {new Date(file.uploadedAt).toLocaleString('nl-NL')}</span>
+                      <span>{file.productName ? `${file.productName} · ${file.productQuantity} stuks` : file.side === 'back' ? 'Achterzijde' : 'Voorzijde'} · {new Date(file.uploadedAt).toLocaleString('nl-NL')}</span>
                     </li>
                   ))}
                 </ul>
@@ -3284,7 +3299,14 @@ export default function App() {
                           hour: '2-digit',
                           minute: '2-digit'
                         });
-                        let ticketLines: { description: string; quantity: number; unitPrice: number }[] = [];
+                        let ticketLines: {
+                          description: string;
+                          quantity: number;
+                          unitPrice: number;
+                          widthMm?: number;
+                          heightMm?: number;
+                          printSides?: 'single' | 'double';
+                        }[] = [];
                         let ticketLinesInvalid = false;
                         if (order.order_type === 'opdrachtbon') {
                           try {
@@ -3428,7 +3450,14 @@ export default function App() {
                                           <ul className="mt-1 space-y-1 text-slate-700">
                                             {ticketLines.map((line, index) => (
                                               <li key={`${line.description}-${index}`} className="flex justify-between gap-2">
-                                                <span>{line.quantity}× {line.description}</span>
+                                                <span>
+                                                  {line.quantity}× {line.description}
+                                                  {line.widthMm && line.heightMm && (
+                                                    <span className="block text-[9px] text-slate-500">
+                                                      {line.widthMm} × {line.heightMm} mm · {line.printSides === 'double' ? 'Dubbelzijdig' : 'Enkelzijdig'}
+                                                    </span>
+                                                  )}
+                                                </span>
                                                 <strong className="shrink-0">{(Number(line.quantity) * Number(line.unitPrice)).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong>
                                               </li>
                                             ))}
@@ -3526,7 +3555,9 @@ export default function App() {
                                         <div className="min-w-0">
                                           <p className="truncate text-[11px] font-bold text-slate-800" title={file.fileName}>{file.fileName}</p>
                                           <p className="text-[9px] text-slate-500">
-                                            {file.side === 'back' ? 'Achterzijde' : 'Voorzijde'} · {(file.size / (1024 * 1024)).toFixed(2)} MB · {new Date(file.uploadedAt).toLocaleDateString('nl-NL')}
+                                            {file.productName
+                                              ? `${file.productName} · ${file.productQuantity} stuks`
+                                              : file.side === 'back' ? 'Achterzijde' : 'Voorzijde'} · {(file.size / (1024 * 1024)).toFixed(2)} MB · {new Date(file.uploadedAt).toLocaleDateString('nl-NL')}
                                           </p>
                                         </div>
                                         <a
