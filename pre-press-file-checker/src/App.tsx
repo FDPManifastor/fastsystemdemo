@@ -722,6 +722,27 @@ export default function App() {
     }
   };
 
+  const handleOrderPayment = async (
+    orderId: string,
+    payment: { action: 'set-prepayment'; amount: number } | { action: 'mark-paid' } | { action: 'mark-unpaid' }
+  ) => {
+    try {
+      const response = await fetch(`/api/orders/${orderId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ payment })
+      });
+      if (response.ok) {
+        fetchAdminOrders();
+      } else {
+        alert('De betaling kon niet worden opgeslagen.');
+      }
+    } catch {
+      alert('Kan de server niet bereiken. De betaling is niet opgeslagen.');
+    }
+  };
+
   const handleDeleteOrder = async (orderId: string) => {
     if (!window.confirm('Weet u zeker dat u deze bestelling wilt verwijderen uit de backoffice?')) return;
     try {
@@ -3504,6 +3525,50 @@ export default function App() {
                                         Totaal: <strong>{Number(order.grand_total || 0).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong>
                                         {' · '}Openstaand: <strong>{Number(order.remaining || 0).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong>
                                       </p>
+                                      <div className="space-y-2 rounded-md border border-rose-100 bg-white p-2">
+                                        <p className="text-slate-700">
+                                          Betaling: <strong>{order.payment_status || 'Niet betaald'}</strong>
+                                          {Number(order.prepayment || 0) > 0 && (
+                                            <> · Aanbetaald: <strong>{Number(order.prepayment).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong></>
+                                          )}
+                                        </p>
+                                        {order.payment_status === 'Volledig betaald' ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => { if (window.confirm('Betaling terugzetten naar openstaand?')) handleOrderPayment(order.id, { action: 'mark-unpaid' }); }}
+                                            className="rounded border border-slate-300 px-2 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-50"
+                                          >
+                                            Terugzetten naar openstaand
+                                          </button>
+                                        ) : (
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <button
+                                              type="button"
+                                              onClick={() => handleOrderPayment(order.id, { action: 'mark-paid' })}
+                                              className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-bold text-white hover:bg-emerald-700"
+                                            >
+                                              Rest betaald
+                                            </button>
+                                            <form
+                                              className="flex items-center gap-1"
+                                              onSubmit={(event) => {
+                                                event.preventDefault();
+                                                const input = event.currentTarget.elements.namedItem('prepayment') as HTMLInputElement;
+                                                const amount = Number(input.value.replace(',', '.'));
+                                                if (!Number.isFinite(amount) || amount < 0 || amount > Number(order.grand_total || 0)) {
+                                                  alert('Vul een geldig bedrag in (niet hoger dan het totaal).');
+                                                  return;
+                                                }
+                                                handleOrderPayment(order.id, { action: 'set-prepayment', amount });
+                                                input.value = '';
+                                              }}
+                                            >
+                                              <input name="prepayment" inputMode="decimal" placeholder="Aanbetaling €" aria-label="Aanbetaling registreren in euro" className="w-28 rounded border border-slate-300 px-2 py-1 text-[11px]" />
+                                              <button type="submit" className="rounded border border-slate-300 px-2 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50">Opslaan</button>
+                                            </form>
+                                          </div>
+                                        )}
+                                      </div>
                                       <p className="text-slate-700">
                                         Bonstatus: <strong>{order.order_status || 'Nieuw'}</strong>
                                         {' · '}Klantakkoord: <strong>{order.customer_approved ? 'Ja' : 'Nee'}</strong>

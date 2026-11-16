@@ -640,15 +640,24 @@ async function startServer() {
         return res.status(400).json({ error: "Invalid order data." });
       }
 
+      // Betaling mag direct op de bon worden vastgelegd (balie). Omdat dit zonder inlog gebeurt, markeren we het
+      // voor controle in de backoffice.
+      const total = orderData.grand_total;
+      const claimedPrepayment = Number.isFinite(Number(orderData.prepayment)) ? Math.min(Math.max(0, Number(orderData.prepayment)), total) : 0;
+      const claimedStatus = ["Deels betaald", "Volledig betaald"].includes(String(orderData.payment_status)) ? String(orderData.payment_status) : "Niet betaald";
+      const paymentStatus = claimedStatus === "Deels betaald" && claimedPrepayment <= 0 ? "Niet betaald" : claimedStatus;
+      const settled = paymentStatus === "Volledig betaald";
       const ticketOrder = {
         ...orderData,
         order_status: "Nieuw",
-        payment_status: "Niet betaald",
-        prepayment: 0,
-        remaining: orderData.grand_total,
+        payment_status: paymentStatus,
+        prepayment: settled && claimedPrepayment <= 0 ? 0 : claimedPrepayment,
+        remaining: settled ? 0 : Math.max(0, Math.round((total - claimedPrepayment) * 100) / 100),
         customer_approved: false,
         assisted_by: typeof orderData.assisted_by === "string" ? orderData.assisted_by.trim().slice(0, 200) : "",
-        internal_notes: "",
+        internal_notes: paymentStatus === "Niet betaald"
+          ? ""
+          : `Betaling is op de bon ingevuld zonder inlog (${paymentStatus.toLowerCase()}, aanbetaling € ${claimedPrepayment.toFixed(2).replace(".", ",")}). Controleer dit in de backoffice.`,
       };
       const created = await createOrder(ticketOrder, undefined, true);
       if (!created) return res.status(400).json({ error: "Invalid order data." });
@@ -681,7 +690,14 @@ async function startServer() {
   }));
 
   app.put("/api/orders/:id", requireAdmin, asyncRoute(async (req, res) => {
-    const { status, note, assignedStaff } = req.body || {};
+    const { status, note, assignedStaff, payment } = req.body || {};
+    if (payment !== undefined) {
+      const okAction = payment && typeof payment === "object" && (
+        (payment.action === "set-prepayment" && typeof payment.amount === "number" && Number.isFinite(payment.amount) && payment.amount >= 0 && payment.amount <= 1000000000) ||
+        payment.action === "mark-paid" || payment.action === "mark-unpaid"
+      );
+      if (!okAction) return res.status(400).json({ error: "Invalid payment update." });
+    }
     if (status !== undefined && (typeof status !== "string" || status.length > 100)) {
       return res.status(400).json({ error: "Invalid status." });
     }
@@ -701,6 +717,33 @@ async function startServer() {
           date: new Date().toISOString(),
           status,
           note: note || `Status gewijzigd van ${oldStatus} naar ${status}.`
+        });
+      }
+
+      if (payment) {
+        const o = order as any;
+        const total = Number(o.grand_total || 0);
+        const euro = (value: number) => `€ ${value.toFixed(2).replace(".", ",")}`;
+        let paymentNote = "";
+        if (payment.action === "set-prepayment") {
+          const amount = Math.min(Math.round(payment.amount * 100) / 100, total);
+          o.prepayment = amount;
+          o.payment_status = amount >= total && total > 0 ? "Volledig betaald" : amount > 0 ? "Deels betaald" : "Niet betaald";
+          o.remaining = Math.max(0, Math.round((total - amount) * 100) / 100);
+          paymentNote = `Aanbetaling geregistreerd: ${euro(amount)}.`;
+        } else if (payment.action === "mark-paid") {
+          o.payment_status = "Volledig betaald";
+          o.remaining = 0;
+          paymentNote = "Restbedrag als betaald geregistreerd.";
+        } else {
+          o.payment_status = Number(o.prepayment || 0) > 0 ? "Deels betaald" : "Niet betaald";
+          o.remaining = Math.max(0, Math.round((total - Number(o.prepayment || 0)) * 100) / 100);
+          paymentNote = "Betaling teruggezet naar openstaand.";
+        }
+        order.history.push({
+          date: new Date().toISOString(),
+          status: status || order.status || "Betaling",
+          note: paymentNote
         });
       }
 

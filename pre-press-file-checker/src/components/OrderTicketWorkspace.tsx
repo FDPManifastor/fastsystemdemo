@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { Calculator, Eraser, Paperclip, Plus, Printer, Save, Send, ShieldCheck, Trash2, X } from 'lucide-react';
 import { PrintProduct } from '../types';
@@ -244,15 +244,29 @@ function TotalsBlock({ subtotal, vat, total }: { subtotal: number; vat: number; 
   );
 }
 
-function PaymentBox({ title, checked, shaded, children }: { title: string; checked: boolean; shaded?: boolean; children: React.ReactNode }) {
+function PaymentBox({ title, checked, shaded, onToggle, disabled, children }: { title: string; checked: boolean; shaded?: boolean; onToggle?: (next: boolean) => void; disabled?: boolean; children: React.ReactNode }) {
+  const interactive = Boolean(onToggle);
   return (
     <div className={`flex min-h-[8.5rem] flex-col gap-2 p-3 ${shaded ? 'bg-slate-100' : ''}`}>
-      <div className="flex items-center gap-2">
-        <span aria-hidden className={`flex h-5 w-5 items-center justify-center border-2 border-slate-800 text-xs font-black ${checked ? 'bg-slate-900 text-white' : 'bg-white'}`}>
-          {checked ? '✓' : ''}
-        </span>
-        <span className="text-sm font-bold text-slate-900">{title}</span>
-      </div>
+      {interactive ? (
+        <label className={`flex items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={disabled}
+            onChange={(event) => onToggle!(event.target.checked)}
+            className="h-5 w-5 shrink-0 cursor-[inherit] accent-[#e31c24]"
+          />
+          <span className="text-sm font-bold text-slate-900">{title}</span>
+        </label>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span aria-hidden className={`flex h-5 w-5 items-center justify-center border-2 border-slate-800 text-xs font-black ${checked ? 'bg-slate-900 text-white' : 'bg-white'}`}>
+            {checked ? '✓' : ''}
+          </span>
+          <span className="text-sm font-bold text-slate-900">{title}</span>
+        </div>
+      )}
       {children}
       <p className="mt-auto text-xs text-slate-600">Handtekening voldaan:</p>
       <div className="h-6 border-b border-dashed border-slate-300" />
@@ -283,6 +297,9 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const [customerApproved, setCustomerApproved] = useState(false);
   const [prepayment, setPrepayment] = useState('0,00');
   const [paidInAdvance, setPaidInAdvance] = useState(false);
+  const [depositOn, setDepositOn] = useState(false);
+  const [restPaid, setRestPaid] = useState(false);
+  const depositInputRef = useRef<HTMLInputElement>(null);
   const [notes, setNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
   const [error, setError] = useState('');
@@ -410,17 +427,20 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
     total = round2(total);
     const vat = round2(total - subtotal);
     if (quantity > 100000 || subtotal > 1000000000) invalid = true;
-    const advance = paidInAdvance ? total : parseAmount(prepayment);
-    const remaining = advance !== null && Number.isFinite(advance)
-      ? Math.max(0, round2(total - advance))
-      : total;
-    const paymentStatus = advance !== null && advance >= total && total > 0
+    const advance = paidInAdvance ? total : depositOn ? parseAmount(prepayment) : 0;
+    const settledByRest = restPaid && !paidInAdvance && total > 0;
+    const remaining = settledByRest
+      ? 0
+      : advance !== null && Number.isFinite(advance)
+        ? Math.max(0, round2(total - advance))
+        : total;
+    const paymentStatus = settledByRest || (advance !== null && advance >= total && total > 0)
       ? 'Volledig betaald'
       : advance !== null && advance > 0
         ? 'Deels betaald'
         : 'Niet betaald';
     return { subtotal, vat, total, advance, remaining, paymentStatus, incomplete, invalid, quantity, itemCount, lineTotals };
-  }, [lines, prepayment, paidInAdvance]);
+  }, [lines, prepayment, paidInAdvance, depositOn, restPaid]);
 
   useEffect(() => {
     const clearPrintMode = () => document.body.classList.remove('job-ticket-printing');
@@ -497,6 +517,8 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
     setCustomerApproved(false);
     setPrepayment('0,00');
     setPaidInAdvance(false);
+    setDepositOn(false);
+    setRestPaid(false);
     setNotes('');
     setInternalNotes('');
     setError('');
@@ -570,13 +592,13 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       delivery_address: finalDeliveryAddress,
       assisted_by: helper,
       order_status: publicAccess ? 'Nieuw' : status,
-      payment_status: publicAccess ? 'Niet betaald' : totals.paymentStatus,
+      payment_status: totals.paymentStatus,
       products_json: JSON.stringify(validLines),
       subtotal: totals.subtotal,
       vat: totals.vat,
       grand_total: totals.total,
-      prepayment: publicAccess ? 0 : totals.advance,
-      remaining: publicAccess ? totals.total : totals.remaining,
+      prepayment: totals.advance,
+      remaining: totals.remaining,
       customer_approved: publicAccess ? false : customerApproved,
       notes: notes.trim(),
       internal_notes: publicAccess ? '' : internalNotes.trim(),
@@ -695,6 +717,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
     const prepaid = Number(d.prepayment || 0);
     const grandTotal = Number(d.grand_total || 0);
     const fullyPrepaid = grandTotal > 0 && prepaid >= grandTotal;
+    const restSettled = grandTotal > 0 && !fullyPrepaid && String(d.payment_status) === 'Volledig betaald';
     const customerFields: Array<[string, unknown]> = [
       ['Naam :', d.clientName],
       ['Contact persoon:', d.contact_person],
@@ -783,8 +806,8 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             <PaymentBox title="Aanbetaling" checked={prepaid > 0 && !fullyPrepaid}>
               <p className="text-lg tabular-nums">{prepaid > 0 && !fullyPrepaid ? money(prepaid) : '€'}</p>
             </PaymentBox>
-            <PaymentBox title="Rest bedrag" checked={false}>
-              <p className="text-lg tabular-nums">{money(Number(d.remaining || 0))}</p>
+            <PaymentBox title="Rest bedrag" checked={restSettled}>
+              <p className="text-lg tabular-nums">{money(restSettled ? Math.max(0, grandTotal - prepaid) : Number(d.remaining || 0))}</p>
             </PaymentBox>
             <PaymentBox title="Vooruit betaling" checked={fullyPrepaid} shaded>
               <p className="text-lg tabular-nums">{fullyPrepaid ? money(prepaid) : '€'}</p>
@@ -1112,30 +1135,56 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             <TotalsBlock subtotal={totals.subtotal} vat={totals.vat} total={totals.total} />
           </section>
 
-          {/* Betaalvakken */}
+          {/* Betaalvakken: aanvinken om direct te registreren dat er betaald is */}
           <section className="mt-5 grid border border-slate-800 sm:grid-cols-3">
-            <PaymentBox title="Aanbetaling" checked={!fullyPrepaidPreview && advanceValue > 0}>
-              {publicAccess ? (
-                <p className="text-lg">€</p>
-              ) : (
+            <PaymentBox
+              title="Aanbetaling"
+              checked={depositOn && !paidInAdvance}
+              disabled={paidInAdvance}
+              onToggle={(next) => {
+                setDepositOn(next);
+                if (next) {
+                  setPaidInAdvance(false);
+                  setPrepayment('');
+                  window.setTimeout(() => depositInputRef.current?.focus(), 0);
+                } else {
+                  setPrepayment('0,00');
+                }
+              }}
+            >
+              {depositOn && !paidInAdvance ? (
                 <label className="flex items-center gap-1">
                   <span className="text-lg">€</span>
-                  <input inputMode="decimal" disabled={paidInAdvance} value={paidInAdvance ? '' : prepayment} onChange={(event) => setPrepayment(event.target.value)} aria-label="Aanbetaling in euro" className={`${lineInput} text-lg tabular-nums disabled:opacity-40`} />
+                  <input ref={depositInputRef} inputMode="decimal" value={prepayment} onChange={(event) => setPrepayment(event.target.value)} placeholder="0,00" aria-label="Aanbetaling in euro" className={`${lineInput} text-lg tabular-nums`} />
                 </label>
-              )}
-            </PaymentBox>
-            <PaymentBox title="Rest bedrag" checked={false}>
-              <p className="text-lg tabular-nums">{money(publicAccess ? totals.total : totals.remaining)}</p>
-            </PaymentBox>
-            <PaymentBox title="Vooruit betaling" checked={fullyPrepaidPreview} shaded>
-              {publicAccess ? (
-                <p className="text-lg">€</p>
               ) : (
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={paidInAdvance} onChange={(event) => setPaidInAdvance(event.target.checked)} className="h-4 w-4 accent-[#e31c24]" />
-                  Volledig vooruitbetaald{fullyPrepaidPreview ? ` (${money(totals.total)})` : ''}
-                </label>
+                <p className="text-lg text-slate-400">€</p>
               )}
+            </PaymentBox>
+            <PaymentBox
+              title="Rest bedrag"
+              checked={restPaid && !paidInAdvance}
+              disabled={paidInAdvance || totals.total <= 0}
+              onToggle={(next) => setRestPaid(next)}
+            >
+              <p className="text-lg tabular-nums">{money(restPaid && !paidInAdvance ? Math.max(0, round2(totals.total - advanceValue)) : totals.remaining)}</p>
+              <p className="-mt-1 text-xs text-slate-500">{restPaid && !paidInAdvance ? 'Rest is voldaan' : 'Vink aan als het restbedrag is betaald'}</p>
+            </PaymentBox>
+            <PaymentBox
+              title="Vooruit betaling"
+              checked={fullyPrepaidPreview}
+              shaded
+              disabled={totals.total <= 0}
+              onToggle={(next) => {
+                setPaidInAdvance(next);
+                if (next) {
+                  setDepositOn(false);
+                  setRestPaid(false);
+                  setPrepayment('0,00');
+                }
+              }}
+            >
+              <p className="text-lg tabular-nums">{fullyPrepaidPreview ? money(totals.total) : '€'}</p>
             </PaymentBox>
           </section>
 
