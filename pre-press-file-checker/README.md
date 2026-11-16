@@ -30,6 +30,15 @@ Orders, klantbestanden, medewerkers en admin-sessies worden opgeslagen in een Po
 
 De opslaglogica staat in `storage.ts`; `server.ts` gebruikt alleen die functies.
 
+## 3D-map van de website (`/map`)
+
+`/map` toont het FDP Register (Notion: FD Printing Center → FDP Register → Register) als draaibare 3D-map: gebieden en onderdelen als punten, "hoort bij" als vaste lijn en "hangt af van" als gestreepte lijn. Klik op een punt voor beschrijving, pad in de repo en links; zoek of filter op gebied.
+
+- De pagina is alleen voor beheer: zonder geldige backoffice-sessie vraagt hij om het backoffice-wachtwoord, en de gegevens (`/api/admin/map`) zijn alleen met sessie op te halen. De pagina is `noindex`.
+- Gegevens komen live uit Notion met dezelfde `NOTION_TOKEN` als de productcatalogus. Deel daarvoor de pagina "FDP Register" met de integratie (••• → Verbindingen). Optioneel: `NOTION_REGISTER_DATABASE_ID` (standaard de database "Register").
+- Zonder token of bij een Notion-fout toont de map de ingebouwde snapshot (`registerSnapshot.ts`) en meldt dat bovenin.
+- Het register in Notion is de bron: pas je daar iets aan, dan verschijnt het binnen een minuut in de map ("Vernieuwen" haalt direct opnieuw op).
+
 ## Producten en prijzen uit Notion
 
 De opdrachtbon zoekt tijdens het typen in de productendatabase van FDPBRAIN (Notion → Producten Database → "Producten — Lightspeed X-Series") en toont de verkoopprijs incl. btw.

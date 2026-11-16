@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { createStorage, type NewFile, type Order } from "./storage";
 import { createCatalog } from "./catalog";
+import { createProjectMap } from "./projectMap";
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -15,6 +16,7 @@ const AUTH_RATE_LIMIT_MAX_REQUESTS = 20;
 
 const storage = createStorage();
 const catalog = createCatalog(storage);
+const projectMap = createProjectMap();
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
 function getClientIp(req: express.Request) {
@@ -478,6 +480,11 @@ async function startServer() {
   app.get("/api/catalog", asyncRoute(async (req, res) => {
     const data = await catalog.get();
     return res.json({ ...catalog.status(), products: data.products });
+  }));
+
+  app.get("/api/admin/map", requireAdmin, asyncRoute(async (req, res) => {
+    res.setHeader("Cache-Control", "private, no-store");
+    return res.json(await projectMap.get(req.query.refresh === "1"));
   }));
 
   app.post("/api/admin/catalog/sync", requireAdmin, asyncRoute(async (req, res) => {
