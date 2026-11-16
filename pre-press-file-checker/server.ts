@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
+import { createStorage, type NewFile, type Order } from "./storage";
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -11,7 +12,7 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX_REQUESTS = 120;
 const AUTH_RATE_LIMIT_MAX_REQUESTS = 20;
 
-const adminSessions = new Map<string, { expiresAt: number }>();
+const storage = createStorage();
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
 function getClientIp(req: express.Request) {
@@ -123,54 +124,47 @@ function ensureAdminPasswordConfigured() {
   }
 }
 
-function createAdminSession() {
-  const now = Date.now();
-  for (const [sessionId, session] of adminSessions) {
-    if (session.expiresAt <= now) adminSessions.delete(sessionId);
-  }
-  while (adminSessions.size >= 10000) {
-    const oldestSessionId = adminSessions.keys().next().value;
-    if (!oldestSessionId) break;
-    adminSessions.delete(oldestSessionId);
-  }
+async function createAdminSession() {
   const sessionId = crypto.randomBytes(32).toString("hex");
-  adminSessions.set(sessionId, { expiresAt: now + ADMIN_SESSION_TTL_MS });
+  await storage.createSession(sessionId, Date.now() + ADMIN_SESSION_TTL_MS);
   return sessionId;
 }
 
-function getAdminSession(req: express.Request) {
+async function getAdminSession(req: express.Request) {
   const cookies = parseCookies(req.headers.cookie);
   const sessionId = cookies.fd_admin_session;
-  if (!sessionId) return null;
+  if (!sessionId || !/^[a-f0-9]{64}$/.test(sessionId)) return null;
 
-  const session = adminSessions.get(sessionId);
-  if (!session) return null;
-
-  if (session.expiresAt <= Date.now()) {
-    adminSessions.delete(sessionId);
-    return null;
-  }
-
-  session.expiresAt = Date.now() + ADMIN_SESSION_TTL_MS;
-  return sessionId;
+  const valid = await storage.touchSession(sessionId, Date.now() + ADMIN_SESSION_TTL_MS);
+  return valid ? sessionId : null;
 }
 
-function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+type AsyncHandler = (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>;
+
+function asyncRoute(handler: AsyncHandler): express.RequestHandler {
+  return (req, res, next) => {
+    handler(req, res, next).catch(next);
+  };
+}
+
+const requireAdmin = asyncRoute(async (req, res, next) => {
   if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12) {
     return res.status(503).json({ error: "Admin authentication is not configured." });
   }
 
-  if (!getAdminSession(req)) {
+  if (!(await getAdminSession(req))) {
     return res.status(401).json({ error: "Not authorized." });
   }
 
   return next();
-}
+});
 
 async function startServer() {
   const app = express();
 
   ensureAdminPasswordConfigured();
+  await storage.init();
+  console.log(`[storage] Opslag actief: ${storage.kind === "postgres" ? "Postgres-database (DATABASE_URL)" : "lokaal bestand local-data.json"}`);
   app.disable("x-powered-by");
   app.set("trust proxy", process.env.NODE_ENV === "production" ? 1 : false);
   app.use(applySecurityHeaders);
@@ -178,68 +172,6 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "32kb", extended: true }));
   app.use("/api", rateLimit(RATE_LIMIT_MAX_REQUESTS));
   app.use("/api", requireSameOrigin);
-
-  const ORDERS_FILE = path.join(process.cwd(), "orders.json");
-
-  function loadOrders() {
-    try {
-      if (fs.existsSync(ORDERS_FILE)) {
-        const raw = fs.readFileSync(ORDERS_FILE, "utf-8");
-        const orders = JSON.parse(raw);
-        if (!Array.isArray(orders)) return [];
-
-        let changed = false;
-        for (const order of orders) {
-          if (!/^[a-f0-9]{48}$/.test(String(order.trackingToken || ""))) {
-            order.trackingToken = crypto.randomBytes(24).toString("hex");
-            changed = true;
-          }
-        }
-        if (changed) saveOrders(orders);
-        return orders;
-      }
-    } catch (e) {
-      console.error("Error reading orders database:", e);
-    }
-    return [];
-  }
-
-  function saveOrders(orders: any[]) {
-    try {
-      const temporaryFile = `${ORDERS_FILE}.tmp`;
-      fs.writeFileSync(temporaryFile, JSON.stringify(orders, null, 2), { encoding: "utf-8", mode: 0o600 });
-      fs.renameSync(temporaryFile, ORDERS_FILE);
-    } catch (e) {
-      console.error("Error saving orders database:", e);
-      throw e;
-    }
-  }
-
-  const STAFF_FILE = path.join(process.cwd(), "staff.json");
-
-  function loadStaff() {
-    try {
-      if (fs.existsSync(STAFF_FILE)) {
-        const raw = fs.readFileSync(STAFF_FILE, "utf-8");
-        return JSON.parse(raw);
-      }
-    } catch (e) {
-      console.error("Error reading staff database:", e);
-    }
-    return [
-      { id: "S1", name: "Jan de Wilde", role: "Pre-press Specialist" },
-      { id: "S2", name: "Sara Bakker", role: "Order Manager" },
-      { id: "S3", name: "Mo El Hamdi", role: "Druk Operator" }
-    ];
-  }
-
-  function saveStaff(staff: any[]) {
-    try {
-      fs.writeFileSync(STAFF_FILE, JSON.stringify(staff, null, 2), "utf-8");
-    } catch (e) {
-      console.error("Error saving staff database:", e);
-    }
-  }
 
   const publicOrderFields = [
     "id",
@@ -434,7 +366,16 @@ async function startServer() {
     return safeData;
   }
 
-  function createOrder(data: any, assignedStaff?: string, allowTicketFields = false) {
+  function findProductUpload(order: Order, uploadToken: string) {
+    if (order.order_type !== "opdrachtbon" || typeof order.products_json !== "string") return undefined;
+    try {
+      return JSON.parse(order.products_json).find((product: any) => product.uploadToken === uploadToken);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function createOrder(data: any, assignedStaff?: string, allowTicketFields = false) {
     const safeData = sanitizeOrderData(data, allowTicketFields);
     if (!safeData) return null;
 
@@ -458,7 +399,7 @@ async function startServer() {
     }
 
     const now = new Date().toISOString();
-    const order = {
+    const order: Order = {
       id: `FD-${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
       ...safeData,
       ...(assignedStaff ? { assignedStaff } : {}),
@@ -472,13 +413,21 @@ async function startServer() {
       }]
     };
 
-    const orders = loadOrders();
-    orders.unshift(order);
-    saveOrders(orders);
-    return order;
+    await storage.insertOrder(order);
+    return { order, productUploadLinks };
   }
 
-  app.post("/api/auth/login", rateLimit(AUTH_RATE_LIMIT_MAX_REQUESTS), (req, res) => {
+  app.get("/api/health", asyncRoute(async (req, res) => {
+    try {
+      await storage.ping();
+      return res.json({ ok: true, storage: storage.kind });
+    } catch (error) {
+      console.error("[health] Database niet bereikbaar:", error);
+      return res.status(503).json({ ok: false, storage: storage.kind, error: "Database niet bereikbaar." });
+    }
+  }));
+
+  app.post("/api/auth/login", rateLimit(AUTH_RATE_LIMIT_MAX_REQUESTS), asyncRoute(async (req, res) => {
     if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12) {
       return res.status(503).json({ error: "Admin auth is not configured." });
     }
@@ -488,7 +437,7 @@ async function startServer() {
       return res.status(401).json({ error: "Invalid password." });
     }
 
-    const sessionId = createAdminSession();
+    const sessionId = await createAdminSession();
     res.cookie("fd_admin_session", sessionId, {
       httpOnly: true,
       sameSite: "lax",
@@ -498,114 +447,97 @@ async function startServer() {
     });
 
     return res.json({ ok: true });
-  });
+  }));
 
-  app.post("/api/auth/logout", (req, res) => {
+  app.post("/api/auth/logout", asyncRoute(async (req, res) => {
     const cookies = parseCookies(req.headers.cookie);
     const sessionId = cookies.fd_admin_session;
     if (sessionId) {
-      adminSessions.delete(sessionId);
+      await storage.deleteSession(sessionId);
     }
 
     res.clearCookie("fd_admin_session", { path: "/", httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" });
     return res.json({ ok: true });
-  });
+  }));
 
-  app.get("/api/auth/session", (req, res) => {
-    const authenticated = Boolean(getAdminSession(req));
+  app.get("/api/auth/session", asyncRoute(async (req, res) => {
+    const authenticated = Boolean(await getAdminSession(req));
     return res.json({ authenticated });
-  });
+  }));
 
-  app.get("/api/staff", requireAdmin, (req, res) => {
-    res.json(loadStaff());
-  });
+  app.get("/api/staff", requireAdmin, asyncRoute(async (req, res) => {
+    res.json(await storage.listStaff());
+  }));
 
-  app.post("/api/staff", requireAdmin, (req, res) => {
-    const { name, role } = req.body;
-    if (!name || !role) {
+  app.post("/api/staff", requireAdmin, asyncRoute(async (req, res) => {
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    const role = typeof req.body?.role === "string" ? req.body.role.trim() : "";
+    if (!name || !role || name.length > 200 || role.length > 200) {
       return res.status(400).json({ error: "Naam en rol zijn verplicht." });
     }
-    const staff = loadStaff();
     const newMember = {
-      id: "S-" + Math.floor(1000 + Math.random() * 9000),
+      id: `S-${crypto.randomBytes(4).toString("hex").toUpperCase()}`,
       name,
       role
     };
-    staff.push(newMember);
-    saveStaff(staff);
+    await storage.addStaff(newMember);
     res.json(newMember);
-  });
+  }));
 
-  app.delete("/api/staff/:id", requireAdmin, (req, res) => {
-    const staff = loadStaff();
-    const filtered = staff.filter((m: any) => m.id !== req.params.id);
-    saveStaff(filtered);
+  app.delete("/api/staff/:id", requireAdmin, asyncRoute(async (req, res) => {
+    await storage.deleteStaff(req.params.id);
     res.json({ success: true });
-  });
+  }));
 
-  app.get("/api/orders", requireAdmin, (req, res) => {
-    res.json(loadOrders().map(serializeAdminOrder));
-  });
+  app.get("/api/orders", requireAdmin, asyncRoute(async (req, res) => {
+    res.json((await storage.listOrders()).map(serializeAdminOrder));
+  }));
 
-  app.get("/api/admin/orders", requireAdmin, (req, res) => {
-    res.json(loadOrders().map(serializeAdminOrder));
-  });
+  app.get("/api/admin/orders", requireAdmin, asyncRoute(async (req, res) => {
+    res.json((await storage.listOrders()).map(serializeAdminOrder));
+  }));
 
-  app.get("/api/orders/:id", requireAdmin, (req, res) => {
-    const orders = loadOrders();
-    const order = orders.find((o: any) => o.id === req.params.id);
+  app.get("/api/orders/:id", requireAdmin, asyncRoute(async (req, res) => {
+    const order = await storage.getOrder(req.params.id);
     if (!order) {
       return res.status(404).json({ error: "Order not found." });
     }
     res.json(serializeAdminOrder(order));
-  });
+  }));
 
-  app.get("/api/orders/:id/files/:fileId", requireAdmin, (req, res) => {
+  app.get("/api/orders/:id/files/:fileId", requireAdmin, asyncRoute(async (req, res) => {
     if (!/^[a-f0-9]{24}$/.test(req.params.fileId)) {
       return res.status(404).json({ error: "File not found." });
     }
 
-    const order = loadOrders().find((item: any) => item.id === req.params.id);
-    const file = (Array.isArray(order?.customerFiles) ? order.customerFiles : [])
-      .find((item: any) => item.id === req.params.fileId);
-    if (!file || typeof file.dataUrl !== "string") {
+    const file = await storage.getFile(req.params.id, req.params.fileId);
+    if (!file) {
       return res.status(404).json({ error: "File not found." });
-    }
-
-    const match = /^data:(application\/pdf|image\/png|image\/jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(file.dataUrl);
-    if (!match || match[1] !== file.fileType) {
-      return res.status(500).json({ error: "Stored file is invalid." });
     }
 
     res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    return res.type(file.fileType).attachment(file.fileName).send(Buffer.from(match[2], "base64"));
-  });
+    return res.type(file.fileType).attachment(file.fileName).send(file.data);
+  }));
 
-  app.get("/api/public/orders/:trackingToken", (req, res) => {
-    if (!/^[a-f0-9]{48}$/.test(req.params.trackingToken)) {
+  app.get("/api/public/orders/:trackingToken", asyncRoute(async (req, res) => {
+    const token = req.params.trackingToken;
+    if (!/^[a-f0-9]{48}$/.test(token)) {
       return res.status(404).json({ error: "Order not found." });
     }
-    const orders = loadOrders();
-    const order = orders.find((item: any) => item.trackingToken === req.params.trackingToken)
-      || orders.find((item: any) => {
-        if (item.order_type !== "opdrachtbon" || typeof item.products_json !== "string") return false;
-        try {
-          return JSON.parse(item.products_json).some((product: any) => product.uploadToken === req.params.trackingToken);
-        } catch {
-          return false;
-        }
-      });
-    if (!order) {
+
+    const trackedOrder = await storage.findOrderByTrackingToken(token);
+    if (trackedOrder) return res.json(serializePublicOrder(trackedOrder));
+
+    const uploadOrder = await storage.findOrderByUploadToken(token);
+    const productUpload = uploadOrder ? findProductUpload(uploadOrder, token) : undefined;
+    if (!uploadOrder || !productUpload) {
       return res.status(404).json({ error: "Order not found." });
     }
-    const productUpload = order.trackingToken === req.params.trackingToken
-      ? undefined
-      : JSON.parse(String(order.products_json)).find((product: any) => product.uploadToken === req.params.trackingToken);
-    return res.json(serializePublicOrder(order, productUpload));
-  });
+    return res.json(serializePublicOrder(uploadOrder, productUpload));
+  }));
 
-  app.post("/api/orders", rateLimit(10), (req, res) => {
+  app.post("/api/orders", rateLimit(10), asyncRoute(async (req, res) => {
     const orderData = req.body?.orderData;
     if (orderData?.order_type === "opdrachtbon") {
       if (
@@ -627,141 +559,149 @@ async function startServer() {
         assisted_by: "",
         internal_notes: "",
       };
-      const order = createOrder(ticketOrder, undefined, true);
-      if (!order) return res.status(400).json({ error: "Invalid order data." });
+      const created = await createOrder(ticketOrder, undefined, true);
+      if (!created) return res.status(400).json({ error: "Invalid order data." });
       return res.status(201).json({
         success: true,
-        orderId: order.id,
-        trackingToken: order.trackingToken,
-        productUploadLinks: order.productUploadLinks
+        orderId: created.order.id,
+        trackingToken: created.order.trackingToken,
+        productUploadLinks: created.productUploadLinks
       });
     }
 
-    const order = createOrder(orderData);
-    if (!order) return res.status(400).json({ error: "Invalid order data." });
-    return res.status(201).json({ success: true, orderId: order.id, trackingToken: order.trackingToken });
-  });
+    const created = await createOrder(orderData);
+    if (!created) return res.status(400).json({ error: "Invalid order data." });
+    return res.status(201).json({ success: true, orderId: created.order.id, trackingToken: created.order.trackingToken });
+  }));
 
-  app.post("/api/admin/orders", requireAdmin, (req, res) => {
+  app.post("/api/admin/orders", requireAdmin, asyncRoute(async (req, res) => {
     const orderData = req.body?.orderData;
     const assignedStaff = typeof orderData?.assignedStaff === "string" ? orderData.assignedStaff.trim() : "";
-    const staffExists = !assignedStaff || loadStaff().some((member: any) => member.name === assignedStaff);
+    const staffExists = !assignedStaff || (await storage.listStaff()).some((member) => member.name === assignedStaff);
     if (!staffExists) return res.status(400).json({ error: "Invalid staff assignment." });
-    const order = createOrder(orderData, assignedStaff || undefined, true);
-    if (!order) return res.status(400).json({ error: "Invalid order data." });
+    const created = await createOrder(orderData, assignedStaff || undefined, true);
+    if (!created) return res.status(400).json({ error: "Invalid order data." });
     return res.status(201).json({
       success: true,
-      orderId: order.id,
-      trackingToken: order.trackingToken,
-      productUploadLinks: order.productUploadLinks
+      orderId: created.order.id,
+      trackingToken: created.order.trackingToken,
+      productUploadLinks: created.productUploadLinks
     });
-  });
+  }));
 
-  app.put("/api/orders/:id", requireAdmin, (req, res) => {
-    const { status, note, assignedStaff } = req.body;
-    const orderId = req.params.id;
-    const orders = loadOrders();
-    const idx = orders.findIndex((o: any) => o.id === orderId);
+  app.put("/api/orders/:id", requireAdmin, asyncRoute(async (req, res) => {
+    const { status, note, assignedStaff } = req.body || {};
+    if (status !== undefined && (typeof status !== "string" || status.length > 100)) {
+      return res.status(400).json({ error: "Invalid status." });
+    }
+    if (note !== undefined && (typeof note !== "string" || note.length > 2000)) {
+      return res.status(400).json({ error: "Invalid note." });
+    }
+    if (assignedStaff !== undefined && (typeof assignedStaff !== "string" || assignedStaff.length > 200)) {
+      return res.status(400).json({ error: "Invalid staff assignment." });
+    }
 
-    if (idx === -1) {
+    const updated = await storage.updateOrder(req.params.id, (order) => {
+      const oldStatus = order.status || "Ingediend";
+      order.history = Array.isArray(order.history) ? order.history : [];
+      if (status) {
+        order.status = status;
+        order.history.push({
+          date: new Date().toISOString(),
+          status,
+          note: note || `Status gewijzigd van ${oldStatus} naar ${status}.`
+        });
+      }
+
+      if (assignedStaff !== undefined) {
+        order.assignedStaff = assignedStaff;
+        order.history.push({
+          date: new Date().toISOString(),
+          status: status || order.status || "Toegewezen",
+          note: assignedStaff
+            ? `Order toegewezen aan medewerker: ${assignedStaff}.`
+            : "Toewijzing van order ingetrokken."
+        });
+      }
+    });
+
+    if (!updated) {
       return res.status(404).json({ error: "Order not found." });
     }
+    return res.json({ success: true, order: serializeAdminOrder(updated) });
+  }));
 
-    const oldStatus = orders[idx].status || "Ingediend";
-    if (status) {
-      orders[idx].status = status;
-      orders[idx].history = orders[idx].history || [];
-      orders[idx].history.push({
-        date: new Date().toISOString(),
-        status,
-        note: note || `Status gewijzigd van ${oldStatus} naar ${status}.`
-      });
-    }
-
-    if (assignedStaff !== undefined) {
-      orders[idx].assignedStaff = assignedStaff;
-      orders[idx].history = orders[idx].history || [];
-      orders[idx].history.push({
-        date: new Date().toISOString(),
-        status: status || orders[idx].status || "Toegewezen",
-        note: assignedStaff
-          ? `Order toegewezen aan medewerker: ${assignedStaff}.`
-          : "Toewijzing van order ingetrokken."
-      });
-    }
-
-    saveOrders(orders);
-    return res.json({ success: true, order: serializeAdminOrder(orders[idx]) });
-  });
-
-  app.post("/api/public/orders/:uploadToken/product-files", rateLimit(10), (req, res) => {
+  app.post("/api/public/orders/:uploadToken/product-files", rateLimit(10), asyncRoute(async (req, res) => {
     const uploadToken = req.params.uploadToken;
     if (!/^[a-f0-9]{48}$/.test(uploadToken)) {
       return res.status(404).json({ error: "Product upload link not found." });
     }
 
-    const orders = loadOrders();
-    let order: any;
-    let productUpload: any;
-    for (const candidate of orders) {
-      if (candidate.order_type !== "opdrachtbon" || typeof candidate.products_json !== "string") continue;
-      try {
-        const product = JSON.parse(candidate.products_json).find((item: any) => item.uploadToken === uploadToken);
-        if (product) {
-          order = candidate;
-          productUpload = product;
-          break;
-        }
-      } catch {
-        continue;
-      }
-    }
-    if (!order || !productUpload) {
+    const file = validateCustomerFile(req.body?.file);
+    const existing = await storage.findOrderByUploadToken(uploadToken);
+    if (!existing || !findProductUpload(existing, uploadToken)) {
       return res.status(404).json({ error: "Product upload link not found." });
     }
-
-    const file = validateCustomerFile(req.body?.file);
     if (!file) {
       return res.status(400).json({ error: "Upload een geldig PDF-, PNG- of JPG-bestand van maximaal 4 MB." });
     }
-    const customerFiles = Array.isArray(order.customerFiles) ? order.customerFiles : [];
-    if (customerFiles.filter((item: any) => item.productLineId === productUpload.id).length >= 20) {
+
+    let productUpload: any;
+    let limitReached = false;
+    const updated = await storage.updateOrder(existing.id, (order) => {
+      productUpload = findProductUpload(order, uploadToken);
+      if (!productUpload) return false;
+
+      const customerFiles = Array.isArray(order.customerFiles) ? order.customerFiles : [];
+      if (customerFiles.filter((item: any) => item.productLineId === productUpload.id).length >= 20) {
+        limitReached = true;
+        return false;
+      }
+
+      const fileId = crypto.randomBytes(12).toString("hex");
+      const uploadedAt = new Date().toISOString();
+      order.customerFiles = [...customerFiles, {
+        id: fileId,
+        fileName: file.fileName,
+        fileType: file.fileType,
+        size: file.size,
+        side: "product",
+        productLineId: productUpload.id,
+        productName: productUpload.description,
+        productQuantity: productUpload.quantity,
+        uploadedAt
+      }];
+      order.status = "Bestanden Ontvangen";
+      order.history = Array.isArray(order.history) ? order.history : [];
+      order.history.push({
+        date: uploadedAt,
+        status: "Bestanden Ontvangen",
+        note: `Klant heeft ${file.fileName} aangeleverd voor ${productUpload.description} (${productUpload.quantity} stuks).`
+      });
+
+      const newFile: NewFile = { id: fileId, fileName: file.fileName, fileType: file.fileType, dataUrl: file.dataUrl };
+      return { addFiles: [newFile] };
+    });
+
+    if (limitReached) {
       return res.status(400).json({ error: "Voor dit product zijn al 20 bestanden ontvangen." });
     }
-
-    const uploadedFile = {
-      id: crypto.randomBytes(12).toString("hex"),
-      ...file,
-      side: "product",
-      productLineId: productUpload.id,
-      productName: productUpload.description,
-      productQuantity: productUpload.quantity,
-      uploadedAt: new Date().toISOString()
-    };
-    order.customerFiles = [...customerFiles, uploadedFile];
-    order.status = "Bestanden Ontvangen";
-    order.history = Array.isArray(order.history) ? order.history : [];
-    order.history.push({
-      date: uploadedFile.uploadedAt,
-      status: "Bestanden Ontvangen",
-      note: `Klant heeft ${file.fileName} aangeleverd voor ${productUpload.description} (${productUpload.quantity} stuks).`
-    });
-    saveOrders(orders.map((item: any) => item.id === order.id ? order : item));
+    if (!updated || !productUpload) {
+      return res.status(404).json({ error: "Product upload link not found." });
+    }
     return res.json({
       success: true,
-      order: serializePublicOrder(order, productUpload)
+      order: serializePublicOrder(updated, productUpload)
     });
-  });
+  }));
 
-  app.post("/api/public/orders/:trackingToken/update-file", rateLimit(10), (req, res) => {
-    const { side, imageSrcUrl, fileName, dpi, pixelWidth, pixelHeight } = req.body;
+  app.post("/api/public/orders/:trackingToken/update-file", rateLimit(10), asyncRoute(async (req, res) => {
+    const { side, imageSrcUrl, fileName, dpi, pixelWidth, pixelHeight } = req.body || {};
     if (!/^[a-f0-9]{48}$/.test(req.params.trackingToken)) {
       return res.status(404).json({ error: "Order not found." });
     }
-    const orders = loadOrders();
-    const order = orders.find((o: any) => o.trackingToken === req.params.trackingToken);
-
-    if (!order) {
+    const existing = await storage.findOrderByTrackingToken(req.params.trackingToken);
+    if (!existing) {
       return res.status(404).json({ error: "Order not found." });
     }
 
@@ -774,52 +714,60 @@ async function startServer() {
       return res.status(400).json({ error: "The original file is invalid or exceeds the 4 MB limit." });
     }
 
-    if (side === "front") {
-      order.imageSrcUrl = imageSrcUrl;
-      order.frontFileName = fileName;
-      order.frontComputedDpi = dpi;
-      order.frontPixelWidth = pixelWidth;
-      order.frontPixelHeight = pixelHeight;
-    } else {
-      order.backImageSrcUrl = imageSrcUrl;
-      order.backFileName = fileName;
-      order.backComputedDpi = dpi;
-      order.backPixelWidth = pixelWidth;
-      order.backPixelHeight = pixelHeight;
-    }
+    const updated = await storage.updateOrder(existing.id, (order) => {
+      if (side === "front") {
+        order.imageSrcUrl = imageSrcUrl;
+        order.frontFileName = fileName;
+        order.frontComputedDpi = dpi;
+        order.frontPixelWidth = pixelWidth;
+        order.frontPixelHeight = pixelHeight;
+      } else {
+        order.backImageSrcUrl = imageSrcUrl;
+        order.backFileName = fileName;
+        order.backComputedDpi = dpi;
+        order.backPixelWidth = pixelWidth;
+        order.backPixelHeight = pixelHeight;
+      }
 
-    if (sourceFile) {
-      const customerFiles = Array.isArray(order.customerFiles) ? order.customerFiles : [];
-      order.customerFiles = [
-        ...customerFiles.filter((file: any) => file.side !== side),
-        {
-          id: crypto.randomBytes(12).toString("hex"),
-          ...sourceFile,
-          side,
-          uploadedAt: new Date().toISOString()
-        }
-      ];
-    }
+      const changes: { addFiles: NewFile[]; removeFileIds: string[] } = { addFiles: [], removeFileIds: [] };
+      if (sourceFile) {
+        const customerFiles = Array.isArray(order.customerFiles) ? order.customerFiles : [];
+        const fileId = crypto.randomBytes(12).toString("hex");
+        changes.removeFileIds = customerFiles.filter((file: any) => file.side === side).map((file: any) => file.id);
+        changes.addFiles = [{ id: fileId, fileName: sourceFile.fileName, fileType: sourceFile.fileType, dataUrl: sourceFile.dataUrl }];
+        order.customerFiles = [
+          ...customerFiles.filter((file: any) => file.side !== side),
+          {
+            id: fileId,
+            fileName: sourceFile.fileName,
+            fileType: sourceFile.fileType,
+            size: sourceFile.size,
+            side,
+            uploadedAt: new Date().toISOString()
+          }
+        ];
+      }
 
-    order.status = "Bestanden Gewijzigd";
-    order.history = order.history || [];
-    order.history.push({
-      date: new Date().toISOString(),
-      status: "Bestanden Gewijzigd",
-      note: `Klant heeft nieuwe bestanden geüpload voor de ${side === "front" ? "Voorkant (A-zijde)" : "Achterkant (B-zijde)"} (${fileName}).`
+      order.status = "Bestanden Gewijzigd";
+      order.history = Array.isArray(order.history) ? order.history : [];
+      order.history.push({
+        date: new Date().toISOString(),
+        status: "Bestanden Gewijzigd",
+        note: `Klant heeft nieuwe bestanden geüpload voor de ${side === "front" ? "Voorkant (A-zijde)" : "Achterkant (B-zijde)"} (${fileName}).`
+      });
+      return changes;
     });
 
-    saveOrders(orders.map((item: any) => (item.id === order.id ? order : item)));
-    return res.json({ success: true, order: serializePublicOrder(order) });
-  });
+    if (!updated) {
+      return res.status(404).json({ error: "Order not found." });
+    }
+    return res.json({ success: true, order: serializePublicOrder(updated) });
+  }));
 
-  app.delete("/api/orders/:id", requireAdmin, (req, res) => {
-    const orderId = req.params.id;
-    let orders = loadOrders();
-    orders = orders.filter((o: any) => o.id !== orderId);
-    saveOrders(orders);
+  app.delete("/api/orders/:id", requireAdmin, asyncRoute(async (req, res) => {
+    await storage.deleteOrder(req.params.id);
     res.json({ success: true });
-  });
+  }));
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -848,9 +796,18 @@ async function startServer() {
     res.status(404).json({ error: "Not found." });
   });
 
+  app.use((error: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error(`[error] ${req.method} ${req.path}:`, error);
+    if (res.headersSent) return;
+    res.status(500).json({ error: "Er ging iets mis op de server. Probeer het opnieuw." });
+  });
+
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[Full-Stack] Server booted successfully on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+startServer().catch((error) => {
+  console.error("[startup] Server kon niet starten:", error);
+  process.exit(1);
+});
