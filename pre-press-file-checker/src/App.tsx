@@ -3303,6 +3303,7 @@ export default function App() {
                           description: string;
                           quantity: number;
                           unitPrice: number;
+                          vatIncluded?: boolean;
                           widthMm?: number;
                           heightMm?: number;
                           printSides?: 'single' | 'double';
@@ -3429,6 +3430,10 @@ export default function App() {
                                         <p className="font-mono font-bold text-slate-800">{order.order_number || order.id}</p>
                                       </div>
                                       {order.contact_person && <p className="text-slate-700">Contact: <strong>{order.contact_person}</strong></p>}
+                                      {(order.client_address || order.client_postcode_city) && (
+                                        <p className="break-words text-slate-600">Adres: {[order.client_address, order.client_postcode_city].filter(Boolean).join(', ')}</p>
+                                      )}
+                                      {order.assisted_by && <p className="text-slate-700">Geholpen door: <strong>{order.assisted_by}</strong></p>}
                                       <p className="text-slate-700">
                                         Levering: <strong>{order.delivery_method || 'Afhalen'}</strong>
                                         {order.delivery_date ? ` · ${order.delivery_date}` : ''}
@@ -3458,7 +3463,10 @@ export default function App() {
                                                     </span>
                                                   )}
                                                 </span>
-                                                <strong className="shrink-0">{(Number(line.quantity) * Number(line.unitPrice)).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong>
+                                                <strong className="shrink-0 text-right">
+                                                  {(Number(line.quantity) * Number(line.unitPrice) * (line.vatIncluded ? 1 : 1.21)).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}
+                                                  <span className="block text-[9px] font-normal text-slate-500">incl. btw</span>
+                                                </strong>
                                               </li>
                                             ))}
                                           </ul>

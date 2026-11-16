@@ -242,7 +242,7 @@ async function startServer() {
     "backPixelWidth", "backPixelHeight", "frontComputedDpi", "backComputedDpi"
   ];
   const ticketOrderFields = [
-    "order_type", "order_number", "contact_person", "delivery_date", "delivery_method", "delivery_address",
+    "order_type", "order_number", "contact_person", "client_address", "client_postcode_city", "delivery_date", "delivery_method", "delivery_address",
     "assisted_by", "order_status", "payment_status", "products_json", "subtotal", "vat", "grand_total",
     "prepayment", "remaining", "customer_approved", "notes", "internal_notes"
   ];
@@ -292,7 +292,7 @@ async function startServer() {
     for (const field of [
       "clientPhone", "clientReference", "clientComments", "selectedProductId", "selectedProductName",
       "selectedProductCategory", "frontFileName", "backFileName", "frontFitMode", "backFitMode",
-      "order_type", "order_number", "contact_person", "delivery_date", "delivery_method", "delivery_address",
+      "order_type", "order_number", "contact_person", "client_address", "client_postcode_city", "delivery_date", "delivery_method", "delivery_address",
       "assisted_by", "order_status", "payment_status", "products_json", "notes", "internal_notes"
     ]) {
       const maxLength = field === "products_json" ? 50000 : 2000;
@@ -344,7 +344,8 @@ async function startServer() {
           !Number.isFinite(product.heightMm) ||
           product.heightMm <= 0 ||
           product.heightMm > 100000 ||
-          !["single", "double"].includes(product.printSides)
+          !["single", "double"].includes(product.printSides) ||
+          (product.vatIncluded !== undefined && typeof product.vatIncluded !== "boolean")
         )) return null;
         safeData.products_json = JSON.stringify(products.map((product: any) => ({
           description: product.description.trim(),
@@ -354,7 +355,8 @@ async function startServer() {
           heightMm: product.heightMm,
           printSides: product.printSides,
           quantity: product.quantity,
-          unitPrice: product.unitPrice
+          unitPrice: product.unitPrice,
+          vatIncluded: product.vatIncluded === true
         })));
       } catch {
         return null;
@@ -556,7 +558,7 @@ async function startServer() {
         prepayment: 0,
         remaining: orderData.grand_total,
         customer_approved: false,
-        assisted_by: "",
+        assisted_by: typeof orderData.assisted_by === "string" ? orderData.assisted_by.trim().slice(0, 200) : "",
         internal_notes: "",
       };
       const created = await createOrder(ticketOrder, undefined, true);
