@@ -39,6 +39,9 @@ export interface Storage {
   /** Geeft true als de sessie geldig is en verlengt hem dan tot `newExpiresAt`. */
   touchSession(sessionId: string, newExpiresAt: number): Promise<boolean>;
   deleteSession(sessionId: string): Promise<void>;
+  /** Kleine sleutel/waarde-opslag voor app-gegevens zoals de productcatalogus. */
+  getMeta(key: string): Promise<string | null>;
+  setMeta(key: string, value: string): Promise<void>;
 }
 
 const DEFAULT_STAFF: StaffMember[] = [
@@ -330,6 +333,18 @@ class PostgresStorage implements Storage {
   async deleteSession(sessionId: string) {
     await this.pool.query("DELETE FROM admin_sessions WHERE id_hash = $1", [hashSessionId(sessionId)]);
   }
+
+  async getMeta(key: string) {
+    const result = await this.pool.query("SELECT value FROM app_meta WHERE key = $1", [key]);
+    return (result.rows[0]?.value as string) ?? null;
+  }
+
+  async setMeta(key: string, value: string) {
+    await this.pool.query(
+      "INSERT INTO app_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      [key, value]
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -341,6 +356,7 @@ type LocalData = {
   files: Record<string, { orderId: string; fileName: string; fileType: string; dataUrl: string }>;
   staff: StaffMember[];
   sessions: Record<string, number>;
+  meta?: Record<string, string>;
 };
 
 class LocalFileStorage implements Storage {
@@ -352,7 +368,7 @@ class LocalFileStorage implements Storage {
   async init() {
     const existing = readLegacyJson("local-data.json");
     if (existing && Array.isArray(existing.orders)) {
-      this.data = { orders: existing.orders, files: existing.files || {}, staff: existing.staff || [], sessions: existing.sessions || {} };
+      this.data = { orders: existing.orders, files: existing.files || {}, staff: existing.staff || [], sessions: existing.sessions || {}, meta: existing.meta || {} };
       return;
     }
 
@@ -493,6 +509,17 @@ class LocalFileStorage implements Storage {
   deleteSession(sessionId: string) {
     return this.serial(() => {
       delete this.data.sessions[hashSessionId(sessionId)];
+      this.persist();
+    });
+  }
+
+  async getMeta(key: string) {
+    return this.data.meta?.[key] ?? null;
+  }
+
+  setMeta(key: string, value: string) {
+    return this.serial(() => {
+      this.data.meta = { ...(this.data.meta || {}), [key]: value };
       this.persist();
     });
   }

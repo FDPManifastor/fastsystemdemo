@@ -48,6 +48,8 @@ import { FDLogo } from './components/FDLogo';
 import { renderPdfFile } from './utils/pdfLoader';
 import OrderTicketWorkspace from './components/OrderTicketWorkspace';
 import TicketProductUploadPortal from './components/TicketProductUploadPortal';
+import ImpositionModal from './components/ImpositionModal';
+import { FileThumb } from './components/ticket/TicketTools';
 
 function TrackingQr({ value, size = 150 }: { value: string; size?: number }) {
   const [src, setSrc] = useState<string>('');
@@ -191,6 +193,7 @@ export default function App() {
   const [adminAuthError, setAdminAuthError] = useState<string | null>(null);
   const [trackingQrCode, setTrackingQrCode] = useState<string>('');
   const [orders, setOrders] = useState<any[]>([]);
+  const [impositionFileId, setImpositionFileId] = useState<string | null>(null);
   const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [adminCategoryFilter, setAdminCategoryFilter] = useState<string>('All');
@@ -1748,8 +1751,62 @@ export default function App() {
               </div>
             </div>
 
+            {/* Opdrachtbon: overzicht per product met openstaande acties voor de klant */}
+            {o.ticket && Array.isArray(o.ticket.products) && (
+              <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-3xs space-y-4 text-left">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <h3 className="font-extrabold text-base text-slate-900">Uw opdracht {o.ticket.orderNumber}</h3>
+                  <p className="text-xs text-slate-600">
+                    Status: <strong>{o.ticket.orderStatus || 'Nieuw'}</strong>
+                    {o.ticket.deliveryDate ? ` · ${o.ticket.deliveryMethod || 'Levering'} ${String(o.ticket.deliveryDate).split('-').reverse().join('-')}` : ''}
+                  </p>
+                </div>
+                {(() => {
+                  const missing = o.ticket.products.filter((product: any) => !product.files?.length).length;
+                  const openAmount = Number(o.ticket.remaining || 0);
+                  return (
+                    <div className={`rounded-xl border p-3 text-xs ${missing || openAmount > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>
+                      <p className="font-bold">{missing || openAmount > 0 ? 'Nog te doen' : 'Alles is compleet. U hoeft niets meer te doen.'}</p>
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                        {missing > 0 && <li>Lever voor {missing === 1 ? '1 product' : `${missing} producten`} nog een drukbestand aan (zie hieronder).</li>}
+                        {openAmount > 0 && <li>Openstaand bedrag: <strong>{openAmount.toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong> ({o.ticket.paymentStatus || 'Niet betaald'}).</li>}
+                      </ul>
+                    </div>
+                  );
+                })()}
+                <ul className="space-y-2">
+                  {o.ticket.products.map((product: any) => {
+                    const hasFiles = Array.isArray(product.files) && product.files.length > 0;
+                    return (
+                      <li key={product.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-3">
+                        <div className="flex min-w-0 items-center gap-3">
+                          {hasFiles ? (
+                            <FileThumb remoteUrl={`/api/public/orders/${encodeURIComponent(trackedOrderId || '')}/files/${encodeURIComponent(product.files[product.files.length - 1].id)}`} fileName={product.files[product.files.length - 1].fileName} fileType={product.files[product.files.length - 1].fileType} size={48} />
+                          ) : (
+                            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded border border-dashed border-amber-400 bg-amber-50 text-lg font-black text-amber-600">!</span>
+                          )}
+                          <div className="min-w-0">
+                            <p className="break-words text-sm font-bold text-slate-900">{product.quantity}× {product.description}</p>
+                            <p className="text-[11px] text-slate-500">
+                              {product.widthMm} × {product.heightMm} mm · {hasFiles ? `${product.files.length} bestand${product.files.length === 1 ? '' : 'en'} ontvangen` : 'nog geen bestand ontvangen'}
+                            </p>
+                          </div>
+                        </div>
+                        <a
+                          href={`/klantportal?token=${encodeURIComponent(product.uploadToken)}`}
+                          className={`shrink-0 rounded-lg px-4 py-2 text-xs font-bold ${hasFiles ? 'border border-slate-300 text-slate-700 hover:bg-slate-50' : 'bg-rose-700 text-white hover:bg-rose-800'}`}
+                        >
+                          {hasFiles ? 'Extra bestand uploaden' : 'Bestand uploaden'}
+                        </a>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
             {/* Action required / Initial Upload files panel */}
-            {(isActionRequired || !o.hasDesignFile) && (
+            {!o.ticket && (isActionRequired || !o.hasDesignFile) && (
               <div className="bg-rose-50 border-2 border-rose-250 rounded-3xl p-6 sm:p-8 shadow-xs space-y-6 text-left">
                 <div className="flex items-center gap-2.5 text-slate-800">
                   <div className={`w-8 h-8 rounded-full ${!o.hasDesignFile ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'} flex items-center justify-center text-sm font-black`}>
@@ -3304,6 +3361,10 @@ export default function App() {
                           quantity: number;
                           unitPrice: number;
                           vatIncluded?: boolean;
+                          fixedTotal?: number;
+                          id?: string;
+                          priceSource?: string;
+                          prepressNote?: string;
                           widthMm?: number;
                           heightMm?: number;
                           printSides?: 'single' | 'double';
@@ -3462,9 +3523,11 @@ export default function App() {
                                                       {line.widthMm} × {line.heightMm} mm · {line.printSides === 'double' ? 'Dubbelzijdig' : 'Enkelzijdig'}
                                                     </span>
                                                   )}
+                                                  {line.priceSource && <span className="block text-[9px] text-slate-400">Prijs: {line.priceSource}</span>}
+                                                  {line.prepressNote && <span className="block text-[9px] text-emerald-700">Pre-press: {line.prepressNote}</span>}
                                                 </span>
                                                 <strong className="shrink-0 text-right">
-                                                  {(Number(line.quantity) * Number(line.unitPrice) * (line.vatIncluded ? 1 : 1.21)).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}
+                                                  {(typeof line.fixedTotal === 'number' ? line.fixedTotal : Number(line.quantity) * Number(line.unitPrice) * (line.vatIncluded ? 1 : 1.21)).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}
                                                   <span className="block text-[9px] font-normal text-slate-500">incl. btw</span>
                                                 </strong>
                                               </li>
@@ -3558,9 +3621,13 @@ export default function App() {
                                     <h5 className="text-xs font-extrabold uppercase tracking-widest text-emerald-900">
                                       Door klant aangeleverde bestanden
                                     </h5>
-                                    {order.customerFiles.map((file: any) => (
-                                      <div key={file.id} className="flex items-center justify-between gap-3 rounded-lg bg-white p-2.5">
-                                        <div className="min-w-0">
+                                    {order.customerFiles.map((file: any) => {
+                                      const fileUrl = `/api/orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(file.id)}`;
+                                      const fileLine = ticketLines.find((line) => line.id && line.id === file.productLineId);
+                                      return (
+                                      <div key={file.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-white p-2.5">
+                                        <FileThumb remoteUrl={fileUrl} fileName={file.fileName} fileType={file.fileType} size={48} />
+                                        <div className="min-w-0 flex-1">
                                           <p className="truncate text-[11px] font-bold text-slate-800" title={file.fileName}>{file.fileName}</p>
                                           <p className="text-[9px] text-slate-500">
                                             {file.productName
@@ -3568,14 +3635,35 @@ export default function App() {
                                               : file.side === 'back' ? 'Achterzijde' : 'Voorzijde'} · {(file.size / (1024 * 1024)).toFixed(2)} MB · {new Date(file.uploadedAt).toLocaleDateString('nl-NL')}
                                           </p>
                                         </div>
-                                        <a
-                                          href={`/api/orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(file.id)}`}
-                                          className="shrink-0 rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-emerald-800"
-                                        >
-                                          Origineel downloaden
-                                        </a>
+                                        <div className="flex shrink-0 gap-2">
+                                          <a
+                                            href={fileUrl}
+                                            className="rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-emerald-800"
+                                          >
+                                            Downloaden
+                                          </a>
+                                          <button
+                                            type="button"
+                                            onClick={() => setImpositionFileId(file.id)}
+                                            className="rounded-lg bg-slate-900 px-3 py-2 text-[10px] font-bold text-white hover:bg-slate-700"
+                                          >
+                                            Inslaan
+                                          </button>
+                                        </div>
+                                        {impositionFileId === file.id && (
+                                          <ImpositionModal
+                                            fileUrl={fileUrl}
+                                            fileName={file.fileName}
+                                            fileType={file.fileType}
+                                            productName={file.productName}
+                                            defaultWidthMm={Number(fileLine?.widthMm || order.customWidth) || undefined}
+                                            defaultHeightMm={Number(fileLine?.heightMm || order.customHeight) || undefined}
+                                            onClose={() => setImpositionFileId(null)}
+                                          />
+                                        )}
                                       </div>
-                                    ))}
+                                      );
+                                    })}
                                   </section>
                                 )}
 

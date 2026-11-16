@@ -4,6 +4,7 @@ import fs from "fs";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { createStorage, type NewFile, type Order } from "./storage";
+import { createCatalog } from "./catalog";
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -13,6 +14,7 @@ const RATE_LIMIT_MAX_REQUESTS = 120;
 const AUTH_RATE_LIMIT_MAX_REQUESTS = 20;
 
 const storage = createStorage();
+const catalog = createCatalog(storage);
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
 function getClientIp(req: express.Request) {
@@ -225,6 +227,40 @@ async function startServer() {
     }
 
     result.hasDesignFile = Boolean(order.imageSrcUrl);
+    if (order.order_type === "opdrachtbon") {
+      let products: any[] = [];
+      try {
+        products = JSON.parse(String(order.products_json || "[]"));
+      } catch {
+        products = [];
+      }
+      const allFiles = Array.isArray(order.customerFiles) ? order.customerFiles : [];
+      result.ticket = {
+        orderNumber: order.order_number,
+        orderStatus: order.order_status,
+        paymentStatus: order.payment_status,
+        grandTotal: order.grand_total,
+        remaining: order.remaining,
+        deliveryDate: order.delivery_date,
+        deliveryMethod: order.delivery_method,
+        customerApproved: Boolean(order.customer_approved),
+        products: (Array.isArray(products) ? products : []).map((product: any) => ({
+          id: product.id,
+          uploadToken: product.uploadToken,
+          description: product.description,
+          quantity: product.quantity,
+          widthMm: product.widthMm,
+          heightMm: product.heightMm,
+          printSides: product.printSides,
+          files: allFiles.filter((file: any) => file.productLineId === product.id).map((file: any) => ({
+            id: file.id,
+            fileName: file.fileName,
+            fileType: file.fileType,
+            uploadedAt: file.uploadedAt
+          }))
+        }))
+      };
+    }
     result.history = (Array.isArray(order.history) ? order.history : []).slice(-30).map((entry: any) => ({
       date: entry.date,
       status: String(entry.status || "").slice(0, 100),
@@ -345,7 +381,13 @@ async function startServer() {
           product.heightMm <= 0 ||
           product.heightMm > 100000 ||
           !["single", "double"].includes(product.printSides) ||
-          (product.vatIncluded !== undefined && typeof product.vatIncluded !== "boolean")
+          (product.vatIncluded !== undefined && typeof product.vatIncluded !== "boolean") ||
+          (product.fixedTotal !== undefined && product.fixedTotal !== null && (
+            typeof product.fixedTotal !== "number" || !Number.isFinite(product.fixedTotal) || product.fixedTotal < 0 || product.fixedTotal > 1000000000
+          )) ||
+          (product.sku !== undefined && (typeof product.sku !== "string" || product.sku.length > 100)) ||
+          (product.priceSource !== undefined && (typeof product.priceSource !== "string" || product.priceSource.length > 300)) ||
+          (product.prepressNote !== undefined && (typeof product.prepressNote !== "string" || product.prepressNote.length > 300))
         )) return null;
         safeData.products_json = JSON.stringify(products.map((product: any) => ({
           description: product.description.trim(),
@@ -356,7 +398,11 @@ async function startServer() {
           printSides: product.printSides,
           quantity: product.quantity,
           unitPrice: product.unitPrice,
-          vatIncluded: product.vatIncluded === true
+          vatIncluded: product.vatIncluded === true,
+          ...(typeof product.fixedTotal === "number" ? { fixedTotal: product.fixedTotal } : {}),
+          ...(product.sku ? { sku: product.sku } : {}),
+          ...(product.priceSource ? { priceSource: product.priceSource } : {}),
+          ...(product.prepressNote ? { prepressNote: product.prepressNote } : {})
         })));
       } catch {
         return null;
@@ -427,6 +473,42 @@ async function startServer() {
       console.error("[health] Database niet bereikbaar:", error);
       return res.status(503).json({ ok: false, storage: storage.kind, error: "Database niet bereikbaar." });
     }
+  }));
+
+  app.get("/api/catalog", asyncRoute(async (req, res) => {
+    const data = await catalog.get();
+    return res.json({ ...catalog.status(), products: data.products });
+  }));
+
+  app.post("/api/admin/catalog/sync", requireAdmin, asyncRoute(async (req, res) => {
+    try {
+      await catalog.sync();
+      return res.json({ ok: true, ...catalog.status() });
+    } catch {
+      return res.status(502).json({ ok: false, ...catalog.status() });
+    }
+  }));
+
+  app.get("/api/public/orders/:token/files/:fileId", asyncRoute(async (req, res) => {
+    const { token, fileId } = req.params;
+    if (!/^[a-f0-9]{48}$/.test(token) || !/^[a-f0-9]{24}$/.test(fileId)) {
+      return res.status(404).json({ error: "File not found." });
+    }
+    let order = await storage.findOrderByTrackingToken(token);
+    let productLineId: string | null = null;
+    if (!order) {
+      order = await storage.findOrderByUploadToken(token);
+      productLineId = order ? findProductUpload(order, token)?.id || "-" : null;
+    }
+    const meta = (Array.isArray(order?.customerFiles) ? order!.customerFiles : []).find((item: any) => item.id === fileId);
+    if (!order || !meta || (productLineId !== null && meta.productLineId !== productLineId)) {
+      return res.status(404).json({ error: "File not found." });
+    }
+    const file = await storage.getFile(order.id, fileId);
+    if (!file) return res.status(404).json({ error: "File not found." });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("Content-Disposition", "inline");
+    return res.type(file.fileType).send(file.data);
   }));
 
   app.post("/api/auth/login", rateLimit(AUTH_RATE_LIMIT_MAX_REQUESTS), asyncRoute(async (req, res) => {

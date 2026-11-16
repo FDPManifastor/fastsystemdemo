@@ -1,8 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import QRCode from 'qrcode';
-import { Eraser, Plus, Printer, Save, Send, Trash2 } from 'lucide-react';
+import { Calculator, Eraser, Paperclip, Plus, Printer, Save, Send, ShieldCheck, Trash2, X } from 'lucide-react';
 import { PrintProduct } from '../types';
 import { FDLogo } from './FDLogo';
+import type { CatalogProduct } from '../utils/pricing';
+import {
+  CalculatorApplied,
+  FileThumb,
+  MAX_UPLOAD_BYTES,
+  PriceCalculatorPanel,
+  ProductSearchInput,
+  TicketPrepressModal,
+  getUploadFileType,
+  readFileAsDataUrl,
+  useCatalog,
+} from './ticket/TicketTools';
 
 interface TicketStaff {
   id: string;
@@ -20,6 +32,18 @@ interface TicketLine {
   quantity: string;
   price: string;
   vatIncluded: boolean;
+  /** Vast regeltotaal incl. btw (uit de calculator); null = aantal × prijs per stuk. */
+  fixedTotal: number | null;
+  sku: string;
+  priceSource: string;
+  file: File | null;
+  prepressNote: string;
+}
+
+interface TicketFileStatus {
+  id: string;
+  fileName: string;
+  fileType: string;
 }
 
 interface SavedLine {
@@ -27,6 +51,7 @@ interface SavedLine {
   quantity: number;
   unitPrice: number;
   vatIncluded?: boolean;
+  fixedTotal?: number;
   widthMm?: number;
   heightMm?: number;
   printSides?: 'single' | 'double';
@@ -87,6 +112,11 @@ const emptyLine = (product?: PrintProduct, quantity = '1'): TicketLine => ({
   quantity,
   price: '',
   vatIncluded: true,
+  fixedTotal: null,
+  sku: '',
+  priceSource: '',
+  file: null,
+  prepressNote: '',
 });
 
 function parseAmount(value: string) {
@@ -106,7 +136,8 @@ function money(value: number) {
 }
 
 /** Regeltotaal inclusief btw, ongeacht of de stukprijs incl. of excl. btw is ingevoerd. */
-function lineTotalIncl(quantity: number, unitPrice: number, vatIncluded?: boolean) {
+function lineTotalIncl(quantity: number, unitPrice: number, vatIncluded?: boolean, fixedTotal?: number | null) {
+  if (typeof fixedTotal === 'number') return fixedTotal;
   const gross = quantity * unitPrice;
   return vatIncluded ? gross : gross * (1 + VAT_RATE);
 }
@@ -257,10 +288,62 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const [error, setError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [createdTicket, setCreatedTicket] = useState<CreatedTicket | null>(null);
+  const [calculatorIndex, setCalculatorIndex] = useState<number | null>(null);
+  const [prepressIndex, setPrepressIndex] = useState<number | null>(null);
+  const [uploadStates, setUploadStates] = useState<Record<number, 'uploading' | 'done' | 'error'>>({});
+  const [receivedFiles, setReceivedFiles] = useState<Record<string, TicketFileStatus[]>>({});
+  const catalog = useCatalog();
   const today = useMemo(() => formatDate(new Date()), []);
 
   const updateLine = (lineIndex: number, changes: Partial<TicketLine>) => {
-    setLines((current) => current.map((line, index) => (index === lineIndex ? { ...line, ...changes } : line)));
+    // Wie aantal, prijs, btw of formaat met de hand wijzigt, laat een eerder berekend vast totaal los.
+    const manualPriceEdit = !('fixedTotal' in changes) && ['quantity', 'price', 'vatIncluded', 'width', 'height'].some((key) => key in changes);
+    setLines((current) => current.map((line, index) => (index === lineIndex
+      ? { ...line, ...changes, ...(manualPriceEdit && line.fixedTotal !== null ? { fixedTotal: null, priceSource: '' } : {}) }
+      : line)));
+  };
+
+  const pickCatalogProduct = (lineIndex: number, product: CatalogProduct) => {
+    updateLine(lineIndex, {
+      description: product.name,
+      quantity: '1',
+      price: product.price > 0 ? product.price.toFixed(2).replace('.', ',') : '',
+      vatIncluded: true,
+      fixedTotal: null,
+      sku: product.sku,
+      priceSource: product.price > 0 ? `FDPBRAIN${product.sku ? ` · SKU ${product.sku}` : ''}` : '',
+    });
+  };
+
+  const applyCalculator = (lineIndex: number, applied: CalculatorApplied) => {
+    updateLine(lineIndex, {
+      description: applied.result.description,
+      productId: '',
+      category: applied.kind === 'sticker' ? 'Sticker' : 'Banner',
+      width: String(applied.widthMm),
+      height: String(applied.heightMm),
+      printSides: 'single',
+      quantity: String(applied.quantity),
+      price: (applied.result.total / applied.quantity).toFixed(2).replace('.', ','),
+      vatIncluded: true,
+      fixedTotal: applied.result.total,
+      sku: '',
+      priceSource: applied.result.source,
+    });
+    setCalculatorIndex(null);
+  };
+
+  const chooseFile = (lineIndex: number, file: File | null) => {
+    setError('');
+    if (file && file.size > MAX_UPLOAD_BYTES) {
+      setError('Bestanden mogen maximaal 4 MB groot zijn.');
+      return;
+    }
+    if (file && !getUploadFileType(file)) {
+      setError('Kies een PDF-, PNG- of JPG-bestand.');
+      return;
+    }
+    updateLine(lineIndex, { file, prepressNote: '' });
   };
 
   const totals = useMemo(() => {
@@ -310,8 +393,9 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
 
       if (lineIsValid) {
         const gross = parsedQuantity * parsedPrice;
-        const excl = line.vatIncluded ? gross / (1 + VAT_RATE) : gross;
-        const incl = line.vatIncluded ? gross : gross * (1 + VAT_RATE);
+        const hasFixed = line.fixedTotal !== null;
+        const excl = hasFixed ? line.fixedTotal! / (1 + VAT_RATE) : line.vatIncluded ? gross / (1 + VAT_RATE) : gross;
+        const incl = hasFixed ? line.fixedTotal! : line.vatIncluded ? gross : gross * (1 + VAT_RATE);
         subtotal += excl;
         total += incl;
         quantity += parsedQuantity;
@@ -350,6 +434,33 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const trackingUrl = createdTicket
     ? `${window.location.origin}/klantportal?token=${encodeURIComponent(createdTicket.trackingToken)}`
     : '';
+
+  // Na het opslaan: bijhouden welke bestanden per product binnen zijn (ook via de QR-code).
+  const createdTrackingToken = createdTicket?.trackingToken;
+  const uploadsBusy = Object.values(uploadStates).some((state) => state === 'uploading');
+  useEffect(() => {
+    if (!createdTrackingToken) return undefined;
+    let active = true;
+    const refresh = async () => {
+      if (document.hidden) return;
+      try {
+        const response = await fetch(`/api/public/orders/${encodeURIComponent(createdTrackingToken)}`, { credentials: 'include' });
+        if (!response.ok) return;
+        const body = await response.json();
+        const next: Record<string, TicketFileStatus[]> = {};
+        for (const product of body?.ticket?.products || []) next[product.id] = Array.isArray(product.files) ? product.files : [];
+        if (active) setReceivedFiles(next);
+      } catch {
+        /* volgende ronde opnieuw */
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(refresh, 8000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [createdTrackingToken, uploadsBusy]);
 
   const handleProductChange = (lineIndex: number, productId: string) => {
     const product = products.find((entry) => entry.id === productId);
@@ -390,13 +501,17 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
     setInternalNotes('');
     setError('');
     setCreatedTicket(null);
+    setCalculatorIndex(null);
+    setPrepressIndex(null);
+    setUploadStates({});
+    setReceivedFiles({});
   };
 
   const submitOrder = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError('');
-    const validLines = lines
-      .filter((line) => line.description.trim() || line.price.trim())
+    const usedLines = lines.filter((line) => line.description.trim() || line.price.trim());
+    const validLines = usedLines
       .map((line) => ({
         description: line.description.trim(),
         productId: line.productId,
@@ -406,7 +521,11 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         printSides: line.category === 'Sticker' ? 'single' : line.printSides,
         quantity: Number(line.quantity),
         unitPrice: parseAmount(line.price) ?? Number.NaN,
-        vatIncluded: line.vatIncluded,
+        vatIncluded: line.fixedTotal !== null ? true : line.vatIncluded,
+        ...(line.fixedTotal !== null ? { fixedTotal: line.fixedTotal } : {}),
+        ...(line.sku ? { sku: line.sku } : {}),
+        ...(line.priceSource ? { priceSource: line.priceSource } : {}),
+        ...(line.file && line.prepressNote ? { prepressNote: line.prepressNote } : {}),
       }));
 
     if (totals.incomplete || totals.invalid || validLines.length === 0) {
@@ -476,15 +595,37 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         setError(result.error || 'De opdrachtbon kon niet worden opgeslagen.');
         return;
       }
+      const uploadLinks: CreatedTicket['productUploadLinks'] = Array.isArray(result.productUploadLinks) ? result.productUploadLinks : [];
       setCreatedTicket({
         id: result.orderId,
         trackingToken: result.trackingToken,
         createdAt: new Date().toISOString(),
         data: payload,
-        productUploadLinks: Array.isArray(result.productUploadLinks) ? result.productUploadLinks : [],
+        productUploadLinks: uploadLinks,
       });
-      onOrderCreated?.();
       window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      // Bestanden die bij een product zijn toegevoegd direct aan dat product koppelen.
+      const pending = usedLines
+        .map((line, index) => ({ file: line.file, index, token: uploadLinks[index]?.uploadToken }))
+        .filter((entry): entry is { file: File; index: number; token: string } => Boolean(entry.file && entry.token));
+      setUploadStates(Object.fromEntries(pending.map((entry) => [entry.index, 'uploading' as const])));
+      for (const entry of pending) {
+        let uploaded = false;
+        try {
+          const dataUrl = await readFileAsDataUrl(entry.file);
+          const uploadResponse = await fetch(`/api/public/orders/${encodeURIComponent(entry.token)}/product-files`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file: { fileName: entry.file.name, fileType: getUploadFileType(entry.file), dataUrl } }),
+          });
+          uploaded = uploadResponse.ok;
+        } catch (uploadError) {
+          console.error('Bestand uploaden mislukt:', uploadError);
+        }
+        setUploadStates((current) => ({ ...current, [entry.index]: uploaded ? 'done' : 'error' }));
+      }
+      onOrderCreated?.();
     } catch (requestError) {
       console.error('Fout bij opslaan opdrachtbon:', requestError);
       setError('Er kon geen verbinding worden gemaakt met het ordersysteem. Probeer het opnieuw.');
@@ -512,7 +653,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
           ? `${window.location.origin}/klantportal?token=${encodeURIComponent(upload.uploadToken)}`
           : '';
         return [
-          `${line.quantity}x ${line.description} — ${money(lineTotalIncl(line.quantity, Number(line.unitPrice), line.vatIncluded))} incl. btw`,
+          `${line.quantity}x ${line.description} — ${money(lineTotalIncl(line.quantity, Number(line.unitPrice), line.vatIncluded, line.fixedTotal))} incl. btw`,
           ...(uploadUrl ? [`Upload bestanden voor dit product: ${uploadUrl}`] : []),
         ];
       }),
@@ -624,7 +765,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                   </td>
                   <td className="py-2 text-right tabular-nums">{money(Number(line.unitPrice))}</td>
                   <td className="py-2 text-center text-xs">{line.vatIncluded ? 'incl.' : 'excl.'}</td>
-                  <td className="py-2 text-right font-semibold tabular-nums">{money(lineTotalIncl(line.quantity, Number(line.unitPrice), line.vatIncluded))}</td>
+                  <td className="py-2 text-right font-semibold tabular-nums">{money(lineTotalIncl(line.quantity, Number(line.unitPrice), line.vatIncluded, line.fixedTotal))}</td>
                 </tr>
               ))}
             </tbody>
@@ -666,6 +807,15 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             ) : null}
           </section>
 
+          <section className="mt-4 flex items-center gap-4 rounded-lg border border-slate-200 p-3">
+            <TicketQr value={trackingUrl} label="de status van uw opdracht" />
+            <div className="min-w-0">
+              <h3 className="text-sm font-extrabold">Volg uw opdracht</h3>
+              <p className="mt-0.5 text-xs text-slate-600">Scan de QR-code om de status te bekijken en te zien wat u nog moet doen, zoals een bestand aanleveren.</p>
+              <a className="no-print mt-1 block break-all text-[10px] font-semibold text-blue-700 underline" href={trackingUrl}>{trackingUrl}</a>
+            </div>
+          </section>
+
           <SheetFooter />
 
           <section className="print-break mt-8 space-y-3">
@@ -681,10 +831,26 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 return (
                   <article key={upload.id} className="flex items-center gap-3 rounded-lg border border-slate-200 p-3">
                     <TicketQr value={uploadUrl} label={line.description} />
-                    <div className="min-w-0 space-y-1">
+                    <div className="min-w-0 flex-1 space-y-1">
                       <h4 className="break-words text-sm font-bold">{line.description}</h4>
                       <p className="text-xs text-slate-500">{line.quantity} stuks{line.widthMm && line.heightMm ? ` · ${line.widthMm} × ${line.heightMm} mm` : ''}</p>
                       <a className="block break-all text-[10px] font-semibold text-blue-700 underline" href={uploadUrl}>{uploadUrl}</a>
+                      <div className="no-print flex flex-wrap items-center gap-1.5 pt-1">
+                        {(receivedFiles[upload.id] || []).map((file) => (
+                          <span key={file.id} title={file.fileName}>
+                            <FileThumb remoteUrl={`/api/public/orders/${encodeURIComponent(upload.uploadToken)}/files/${encodeURIComponent(file.id)}`} fileName={file.fileName} fileType={file.fileType} size={36} />
+                          </span>
+                        ))}
+                        <span className={`text-[11px] font-semibold ${uploadStates[index] === 'error' ? 'text-rose-700' : (receivedFiles[upload.id] || []).length ? 'text-emerald-700' : 'text-amber-700'}`}>
+                          {uploadStates[index] === 'uploading'
+                            ? 'Bestand wordt geüpload…'
+                            : uploadStates[index] === 'error'
+                              ? 'Uploaden mislukt. Lever het bestand opnieuw aan via de QR-code of link.'
+                              : (receivedFiles[upload.id] || []).length
+                                ? `${(receivedFiles[upload.id] || []).length} bestand${(receivedFiles[upload.id] || []).length === 1 ? '' : 'en'} ontvangen`
+                                : 'Nog geen bestand ontvangen'}
+                        </span>
+                      </div>
                     </div>
                   </article>
                 );
@@ -825,9 +991,18 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
 
                 <div className="col-span-2 space-y-2 md:col-span-1">
                   <span className="text-[10px] font-bold uppercase text-slate-500 md:hidden">Product omschrijving</span>
-                  <input required maxLength={2000} value={line.description} onChange={(event) => updateLine(index, { description: event.target.value })} placeholder="Omschrijving van het product" aria-label={`Omschrijving regel ${index + 1}`} className={lineInput} />
+                  <ProductSearchInput
+                    value={line.description}
+                    onChange={(value) => updateLine(index, { description: value })}
+                    onPick={(product) => pickCatalogProduct(index, product)}
+                    products={catalog.products}
+                    placeholder={catalog.products.length ? 'Typ om een product te zoeken, bijv. "flyers a5 250"' : 'Omschrijving van het product'}
+                    ariaLabel={`Omschrijving regel ${index + 1}`}
+                    className={lineInput}
+                  />
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
                     <select value={line.productId} onChange={(event) => handleProductChange(index, event.target.value)} aria-label={`Productsoort regel ${index + 1}`} className="rounded border border-slate-200 bg-slate-50 px-1.5 py-1 text-xs">
+                      {!products.some((product) => product.id === line.productId) && <option value={line.productId}>Eigen formaat</option>}
                       {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
                     </select>
                     <span className="inline-flex items-center gap-1">
@@ -840,6 +1015,37 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                       <option value="single">Enkelzijdig</option>
                       <option value="double">Dubbelzijdig</option>
                     </select>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <button type="button" onClick={() => setCalculatorIndex(calculatorIndex === index ? null : index)} aria-expanded={calculatorIndex === index} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
+                      <Calculator className="h-3.5 w-3.5" /> Calculator
+                    </button>
+                    {line.file ? (
+                      <span className="inline-flex min-w-0 items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 py-0.5 pl-0.5 pr-1">
+                        <FileThumb file={line.file} fileName={line.file.name} size={30} />
+                        <span className="max-w-[11rem] truncate font-semibold text-emerald-900" title={line.file.name}>{line.file.name}</span>
+                        <button type="button" onClick={() => setPrepressIndex(index)} className="inline-flex items-center gap-1 rounded bg-slate-900 px-2 py-1 font-bold text-white hover:bg-slate-700">
+                          <ShieldCheck className="h-3.5 w-3.5" /> {line.prepressNote ? 'Gecheckt' : 'Pre-press check'}
+                        </button>
+                        <button type="button" onClick={() => chooseFile(index, null)} aria-label={`Bestand van regel ${index + 1} verwijderen`} className="rounded p-1 text-slate-500 hover:bg-emerald-100">
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    ) : (
+                      <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
+                        <Paperclip className="h-3.5 w-3.5" /> Bestand toevoegen
+                        <input
+                          type="file"
+                          accept="application/pdf,image/png,image/jpeg,.pdf,.png,.jpg,.jpeg"
+                          className="sr-only"
+                          onChange={(event) => {
+                            chooseFile(index, event.target.files?.[0] ?? null);
+                            event.target.value = '';
+                          }}
+                        />
+                      </label>
+                    )}
+                    {line.priceSource && <span className="text-[10px] text-slate-400">Prijs: {line.priceSource}</span>}
                   </div>
                 </div>
 
@@ -874,9 +1080,24 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 <button type="button" aria-label={`Regel ${index + 1} verwijderen`} disabled={lines.length === 1} onClick={() => setLines((current) => current.filter((_, row) => row !== index))} className="flex h-8 w-8 items-center justify-center justify-self-end rounded-md text-slate-400 hover:bg-rose-50 hover:text-[#e31c24] disabled:cursor-not-allowed disabled:opacity-30">
                   <Trash2 className="h-4 w-4" />
                 </button>
+
+                {calculatorIndex === index && (
+                  <PriceCalculatorPanel
+                    initialKind={line.category === 'Banner' ? 'banner' : 'sticker'}
+                    onApply={(applied) => applyCalculator(index, applied)}
+                    onClose={() => setCalculatorIndex(null)}
+                  />
+                )}
               </div>
             ))}
           </div>
+          <p className="mt-1 text-[11px] text-slate-500">
+            {catalog.loading
+              ? 'Productcatalogus laden…'
+              : catalog.products.length
+                ? `${catalog.products.length} producten uit FDPBRAIN beschikbaar. Bestanden kunnen ook na het opslaan via de QR-code per product worden aangeleverd.`
+                : 'De productcatalogus uit Notion is nog niet gekoppeld; vul omschrijving en prijs met de hand in of gebruik de calculator.'}
+          </p>
 
           <button type="button" onClick={() => setLines((current) => [...current, emptyLine(products[0])])} className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs font-bold text-slate-600 hover:border-slate-500 hover:text-slate-900">
             <Plus className="h-3.5 w-3.5" /> Regel toevoegen
@@ -958,6 +1179,20 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
           </button>
         </div>
       </form>
+      {prepressIndex !== null && lines[prepressIndex]?.file && (
+        <TicketPrepressModal
+          file={lines[prepressIndex].file!}
+          description={lines[prepressIndex].description}
+          category={lines[prepressIndex].category}
+          widthMm={Number(lines[prepressIndex].width) || 210}
+          heightMm={Number(lines[prepressIndex].height) || 297}
+          onClose={() => setPrepressIndex(null)}
+          onDone={(outcome) => {
+            updateLine(prepressIndex, { prepressNote: outcome.note });
+            setPrepressIndex(null);
+          }}
+        />
+      )}
       {printStyles}
     </div>
   );

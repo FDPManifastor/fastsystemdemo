@@ -30,6 +30,16 @@ Orders, klantbestanden, medewerkers en admin-sessies worden opgeslagen in een Po
 
 De opslaglogica staat in `storage.ts`; `server.ts` gebruikt alleen die functies.
 
+## Producten en prijzen uit Notion
+
+De opdrachtbon zoekt tijdens het typen in de productendatabase van FDPBRAIN (Notion → Producten Database → "Producten — Lightspeed X-Series") en toont de verkoopprijs incl. btw.
+
+- `NOTION_TOKEN`: token van een Notion-integratie (notion.so/profile/integrations) die via "Verbindingen" toegang heeft gekregen tot de pagina "Producten Database". Zet dit als secret op Render.
+- `NOTION_PRODUCTS_DATABASE_ID`: optioneel; standaard de FDPBRAIN-productendatabase.
+- De catalogus wordt in de database bewaard en elk uur ververst. Direct verversen kan (ingelogd) met `POST /api/admin/catalog/sync`. Controleren: `/api/catalog` toont `configured`, `count`, `syncedAt` en een eventuele `error`.
+
+De sticker- en bannercalculator (`src/utils/pricing.ts`) gebruikt dezelfde tarieven als de "Printcalculatoren" in FDPBRAIN → Calculators. Wijzigen de tarieven daar, pas ze dan ook in dat bestand aan.
+
 ## Secure Deployment
 
 Configure these environment variables in the hosting service. Never commit the admin password or put it in frontend code.
