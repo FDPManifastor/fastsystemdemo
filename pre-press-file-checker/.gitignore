@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+# Lokale opslag zonder database (alleen ontwikkelen)
+local-data.json
+local-data.json.tmp
+staff.json
+orders.json.tmp
