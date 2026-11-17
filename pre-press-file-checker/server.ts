@@ -252,6 +252,8 @@ async function startServer() {
     publicOrderFields.forEach((field) => {
       if (field in order) result[field] = order[field];
     });
+    // Interne notities (wie werkt eraan, delen, verplaatsen, aanpassen) zijn niet voor de klant.
+    if (Array.isArray(order.history)) result.history = order.history.filter((entry: any) => !entry?.internal);
     const customerFiles = (Array.isArray(order.customerFiles) ? order.customerFiles : [])
       .filter((file: any) => !productUpload || file.productLineId === productUpload.id);
     result.customerFiles = customerFiles.map((file: any) => ({
@@ -892,14 +894,15 @@ async function startServer() {
         order.history.push({
           date: new Date().toISOString(),
           status: order.status || "Gedeeld",
-          note: order.sharedWith.length ? `Opdracht gedeeld met: ${order.sharedWith.join(", ")}.` : "Delen van de opdracht gestopt."
+          note: order.sharedWith.length ? `Opdracht gedeeld met: ${order.sharedWith.join(", ")}.` : "Delen van de opdracht gestopt.",
+          internal: true
         });
       }
 
       if (moveToBranch !== undefined) {
         order.branch = moveToBranch;
         order.sharedWith = (Array.isArray(order.sharedWith) ? order.sharedWith : []).filter((branch: string) => branch !== moveToBranch);
-        order.history.push({ date: new Date().toISOString(), status: order.status || "Verplaatst", note: `Opdracht verplaatst naar filiaal ${moveToBranch}.` });
+        order.history.push({ date: new Date().toISOString(), status: order.status || "Verplaatst", note: `Opdracht verplaatst naar filiaal ${moveToBranch}.`, internal: true });
       }
 
       if (editData && editedProducts) {
@@ -911,7 +914,8 @@ async function startServer() {
         order.history.push({
           date: new Date().toISOString(),
           status: order.status || "Aangepast",
-          note: `Opdrachtbon aangepast${info.role === "branch" ? ` (${info.branch})` : " door de beheerder"}.`
+          note: `Opdrachtbon aangepast${info.role === "branch" ? ` (${info.branch})` : " door de beheerder"}.`,
+          internal: true
         });
       }
 
@@ -922,7 +926,8 @@ async function startServer() {
           status: status || order.status || "Toegewezen",
           note: assignedStaff
             ? `Order toegewezen aan medewerker: ${assignedStaff}.`
-            : "Toewijzing van order ingetrokken."
+            : "Toewijzing van order ingetrokken.",
+          internal: true
         });
       }
     });

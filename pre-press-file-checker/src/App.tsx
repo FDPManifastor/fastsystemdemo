@@ -3825,14 +3825,14 @@ export default function App() {
                                   )}
 
                                   <div className="space-y-1 block pt-2 border-t border-slate-100 font-sans">
-                                    <span className="text-[10px] uppercase font-extrabold text-slate-500 block mb-1">Toegewezen Personeelslid</span>
+                                    <span className="text-[10px] uppercase font-extrabold text-slate-500 block mb-1">Wie is hiermee bezig? (alleen intern)</span>
                                     <select
                                       value={order.assignedStaff || ''}
                                       onChange={(e) => handleAssignStaff(order.id, e.target.value)}
                                       className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-semibold text-slate-705 focus:ring-1 focus:ring-blue-500 cursor-pointer"
                                     >
-                                      <option value="">-- Geen operator zugewezen --</option>
-                                      {staffList.map((m) => (
+                                      <option value="">-- Nog niemand --</option>
+                                      {staffList.filter((m) => !m.branch || m.branch === (order.branch || 'Amsterdam') || m.name === order.assignedStaff).map((m) => (
                                         <option key={m.id} value={m.name}>
                                           {m.name} ({m.role})
                                         </option>
@@ -3841,11 +3841,11 @@ export default function App() {
                                     
                                     {order.assignedStaff ? (
                                       <div className="text-[10px] text-emerald-800 font-extrabold bg-emerald-50 px-2 py-1.5 rounded-lg border border-emerald-100 mt-2 block w-full text-center">
-                                        ✓ Behandeld door: {order.assignedStaff}
+                                        ✓ In behandeling door: {order.assignedStaff}
                                       </div>
                                     ) : (
                                       <div className="text-[10px] text-amber-805 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-100 mt-2 block w-full text-center animate-pulse">
-                                        ⚠ Wacht op toewijzing operator
+                                        ⚠ Nog niemand aan toegewezen
                                       </div>
                                     )}
                                   </div>
