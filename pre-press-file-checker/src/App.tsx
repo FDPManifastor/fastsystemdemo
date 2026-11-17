@@ -348,6 +348,8 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
   const [branchPasswordMessage, setBranchPasswordMessage] = useState<string>('');
   const BRANCHES = ['Amsterdam', 'Utrecht', 'Hoogvliet'];
   const isOwner = sessionRole === 'admin';
+  /** Ingelogd als filiaal (personeel): geen portaalmenu, alleen de werkplaats. */
+  const isStaffLoggedIn = isAdminAuthenticated && sessionRole === 'branch';
   const [adminPasswordInput, setAdminPasswordInput] = useState<string>('');
   const [adminAuthError, setAdminAuthError] = useState<string | null>(null);
   const [trackingQrCode, setTrackingQrCode] = useState<string>('');
@@ -2717,15 +2719,15 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
       <header className="border-b border-slate-200 bg-white sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
           <div
-            onClick={isClientPortal || isOrdersRoute ? undefined : () => setActivePortal('landing')}
-            className={isClientPortal || isOrdersRoute ? 'group' : 'cursor-pointer group'}
-            title={isClientPortal || isOrdersRoute ? undefined : 'Klik hier om terug te gaan naar het Hoofdmenu'}
+            onClick={isClientPortal || isOrdersRoute || isStaffLoggedIn ? undefined : () => setActivePortal('landing')}
+            className={isClientPortal || isOrdersRoute || isStaffLoggedIn ? 'group' : 'cursor-pointer group'}
+            title={isClientPortal || isOrdersRoute || isStaffLoggedIn ? undefined : 'Klik hier om terug te gaan naar het Hoofdmenu'}
           >
             <FDLogo />
           </div>
  
           {/* Premium Portal Switching Tabs */}
-          {!isClientPortal && !isOrdersRoute && <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50 max-w-md">
+          {!isClientPortal && !isOrdersRoute && !isStaffLoggedIn && <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50 max-w-md">
             <button
               onClick={() => setActivePortal('landing')}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
@@ -2771,7 +2773,7 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
               <span className="w-1.5 h-1.5 rounded-full bg-brand-red animate-ping"></span>
               FOGRA39 Compliant
             </span>
-            {!isOrdersRoute && <div className="text-xs text-slate-400 font-medium hidden md:block font-mono">
+            {!isOrdersRoute && !isStaffLoggedIn && <div className="text-xs text-slate-400 font-medium hidden md:block font-mono">
               admin@fdprinting.nl
             </div>}
           </div>
