@@ -315,6 +315,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const [notes, setNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
   const [qrOpenIndex, setQrOpenIndex] = useState<number | null>(null);
+  const [addMenuIndex, setAddMenuIndex] = useState<number | null>(null);
   const [restoredAt, setRestoredAt] = useState<number | null>(null);
   const draftRestoredRef = useRef(false);
   const [draftReady, setDraftReady] = useState(false);
@@ -1210,23 +1211,32 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                         </button>
                       </span>
                     ) : (
-                      <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
-                        <Paperclip className="h-3.5 w-3.5" /> Bestand toevoegen
-                        <input
-                          type="file"
-                          accept="application/pdf,image/png,image/jpeg,.pdf,.png,.jpg,.jpeg"
-                          className="sr-only"
-                          onChange={(event) => {
-                            chooseFile(index, event.target.files?.[0] ?? null);
-                            event.target.value = '';
-                          }}
-                        />
-                      </label>
-                    )}
-                    {!line.file && (
-                      <button type="button" onClick={() => startDraftUpload(index)} aria-expanded={qrOpenIndex === index} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
-                        <QrCode className="h-3.5 w-3.5" /> QR: klant uploadt nu
-                      </button>
+                      <span className="inline-flex flex-wrap items-center gap-1.5">
+                        <button type="button" onClick={() => setAddMenuIndex(addMenuIndex === index ? null : index)} aria-expanded={addMenuIndex === index} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
+                          <Paperclip className="h-3.5 w-3.5" /> Bestand toevoegen
+                        </button>
+                        {(addMenuIndex === index || qrOpenIndex === index) && (
+                          <>
+                            <label className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-slate-900 px-2 py-1 font-bold text-white hover:bg-slate-700">
+                              <Paperclip className="h-3.5 w-3.5" /> Uit bestanden
+                              <input
+                                type="file"
+                                accept="application/pdf,image/png,image/jpeg,.pdf,.png,.jpg,.jpeg"
+                                className="sr-only"
+                                onChange={(event) => {
+                                  setAddMenuIndex(null);
+                                  setQrOpenIndex(null);
+                                  chooseFile(index, event.target.files?.[0] ?? null);
+                                  event.target.value = '';
+                                }}
+                              />
+                            </label>
+                            <button type="button" onClick={() => { setAddMenuIndex(null); startDraftUpload(index); }} aria-expanded={qrOpenIndex === index} className="inline-flex items-center gap-1 rounded-md bg-[#e31c24] px-2 py-1 font-bold text-white hover:bg-[#b8141a]">
+                              <QrCode className="h-3.5 w-3.5" /> QR-code (telefoon)
+                            </button>
+                          </>
+                        )}
+                      </span>
                     )}
                     {line.priceSource && <span className="text-[10px] text-slate-400">Prijs: {line.priceSource}</span>}
                   </div>
