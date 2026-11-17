@@ -12,6 +12,7 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const ADMIN_SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX_REQUESTS = 120;
+const MAX_CUSTOMER_FILE_BYTES = 20 * 1024 * 1024;
 const AUTH_RATE_LIMIT_MAX_REQUESTS = 20;
 
 const storage = createStorage();
@@ -172,6 +173,8 @@ async function startServer() {
   app.disable("x-powered-by");
   app.set("trust proxy", process.env.NODE_ENV === "production" ? 1 : false);
   app.use(applySecurityHeaders);
+  // Bestandsuploads (base64 in json) mogen groter zijn dan gewone verzoeken.
+  app.use("/api/public/orders", express.json({ limit: "32mb" }));
   app.use(express.json({ limit: "20mb" }));
   app.use(express.urlencoded({ limit: "32kb", extended: true }));
   app.use("/api", rateLimit(RATE_LIMIT_MAX_REQUESTS));
@@ -308,7 +311,7 @@ async function startServer() {
     if (!fileName || fileName.length > 255 || !match || match[1] !== value.fileType) return null;
 
     const bytes = Buffer.from(match[2], "base64");
-    if (bytes.length === 0 || bytes.length > 4 * 1024 * 1024) return null;
+    if (bytes.length === 0 || bytes.length > MAX_CUSTOMER_FILE_BYTES) return null;
     if (value.fileType === "application/pdf" && !bytes.subarray(0, 5).equals(Buffer.from("%PDF-"))) return null;
     if (value.fileType === "image/png" && !bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return null;
     if (value.fileType === "image/jpeg" && (bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff)) return null;
@@ -319,7 +322,10 @@ async function startServer() {
   function sanitizeOrderData(data: any, allowTicketFields = false) {
     if (!data || typeof data !== "object" || Array.isArray(data)) return null;
     if (typeof data.clientName !== "string" || !data.clientName.trim() || data.clientName.length > 200) return null;
-    if (typeof data.clientEmail !== "string" || data.clientEmail.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.clientEmail)) return null;
+    if (typeof data.clientEmail !== "string" || data.clientEmail.length > 320) return null;
+    // Bij een opdrachtbon aan de balie mag het e-mailadres leeg blijven.
+    const emailOptional = data.order_type === "opdrachtbon" && data.clientEmail.trim() === "";
+    if (!emailOptional && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.clientEmail)) return null;
     if (!isValidInlineImage(data.imageSrcUrl) || !isValidInlineImage(data.backImageSrcUrl)) return null;
 
     const safeData: Record<string, unknown> = {};
@@ -777,7 +783,7 @@ async function startServer() {
       return res.status(404).json({ error: "Product upload link not found." });
     }
     if (!file) {
-      return res.status(400).json({ error: "Upload een geldig PDF-, PNG- of JPG-bestand van maximaal 4 MB." });
+      return res.status(400).json({ error: "Upload een geldig PDF-, PNG- of JPG-bestand van maximaal 20 MB." });
     }
 
     let productUpload: any;
@@ -845,7 +851,7 @@ async function startServer() {
 
     const sourceFile = req.body?.sourceFile === undefined ? null : validateCustomerFile(req.body.sourceFile);
     if (req.body?.sourceFile !== undefined && !sourceFile) {
-      return res.status(400).json({ error: "The original file is invalid or exceeds the 4 MB limit." });
+      return res.status(400).json({ error: "The original file is invalid or exceeds the 20 MB limit." });
     }
 
     const updated = await storage.updateOrder(existing.id, (order) => {

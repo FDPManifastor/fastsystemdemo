@@ -19,7 +19,8 @@ import {
 
 const money = (value: number) => new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR' }).format(value);
 
-export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+export const MAX_UPLOAD_LABEL = '20 MB';
 
 export function getUploadFileType(file: File) {
   if (['application/pdf', 'image/png', 'image/jpeg'].includes(file.type)) return file.type;
@@ -193,7 +194,7 @@ export interface CalculatorApplied {
 
 const calcInput = 'w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 focus:border-[#e31c24] focus:outline-none focus:ring-1 focus:ring-[#e31c24]';
 
-export function PriceCalculatorPanel({ initialKind = 'sticker', onApply, onClose }: { initialKind?: CalculatorKind; onApply: (applied: CalculatorApplied) => void; onClose: () => void }) {
+export function PriceCalculatorPanel({ initialKind = 'sticker', lockKind = false, onApply, onClose }: { initialKind?: CalculatorKind; lockKind?: boolean; onApply: (applied: CalculatorApplied) => void; onClose: () => void }) {
   const [kind, setKind] = useState<CalculatorKind>(initialKind);
   const [stickerMaterial, setStickerMaterial] = useState<string>(STICKER_MATERIALS[0].id);
   const [bannerMaterial, setBannerMaterial] = useState<string>(BANNER_MATERIALS[0].id);
@@ -236,14 +237,14 @@ export function PriceCalculatorPanel({ initialKind = 'sticker', onApply, onClose
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Calculator className="h-4 w-4 text-[#e31c24]" />
-          <h4 className="text-sm font-extrabold text-slate-900">Prijscalculator</h4>
-          <div className="ml-2 flex rounded-lg border border-slate-300 bg-white p-0.5">
+          <h4 className="text-sm font-extrabold text-slate-900">{lockKind ? (kind === 'banner' ? 'Banner berekenen' : 'Stickers: formaat en prijs berekenen') : 'Prijscalculator'}</h4>
+          {!lockKind && <div className="ml-2 flex rounded-lg border border-slate-300 bg-white p-0.5">
             {(['sticker', 'banner'] as const).map((option) => (
               <button key={option} type="button" onClick={() => switchKind(option)} aria-pressed={kind === option} className={`rounded-md px-3 py-1 text-xs font-bold ${kind === option ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
                 {option === 'sticker' ? 'Stickers' : 'Banners'}
               </button>
             ))}
-          </div>
+          </div>}
         </div>
         <button type="button" onClick={onClose} aria-label="Calculator sluiten" className="rounded-md p-1 text-slate-500 hover:bg-slate-200">
           <X className="h-4 w-4" />
@@ -552,7 +553,7 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
       const bytes = new Uint8Array(await file.arrayBuffer());
       const result = await buildPrintReadyPdf(bytes, getUploadFileType(file), { trimWidthMm: widthMm, trimHeightMm: heightMm, bleedMm, fit: fitMode, rotation });
       if (result.byteLength > MAX_UPLOAD_BYTES) {
-        setError('Het printklare bestand is groter dan 4 MB. Gebruik het origineel of een kleiner bestand.');
+        setError('Het printklare bestand is groter dan 20 MB. Gebruik het origineel of een kleiner bestand.');
         return;
       }
       const name = `${file.name.replace(/\.[^.]+$/, '')}_printklaar.pdf`;

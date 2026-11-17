@@ -26,7 +26,7 @@ interface TicketProductUploadPortalProps {
   onUploadComplete: () => void;
 }
 
-const MAX_FILE_SIZE = 4 * 1024 * 1024;
+const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const ALLOWED_TYPES = ['application/pdf', 'image/png', 'image/jpeg'];
 
 function getFileType(file: File) {
@@ -71,7 +71,7 @@ export default function TicketProductUploadPortal({
     }
     if (selected.size > MAX_FILE_SIZE) {
       setFile(null);
-      setError('Bestanden mogen maximaal 4 MB groot zijn.');
+      setError('Bestanden mogen maximaal 20 MB groot zijn.');
       event.target.value = '';
       return;
     }
@@ -132,7 +132,7 @@ export default function TicketProductUploadPortal({
         <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div>
             <h2 className="text-lg font-bold">Drukbestand aanleveren</h2>
-            <p className="mt-1 text-sm text-slate-500">Dit bestand wordt rechtstreeks aan <strong>{product.description}</strong> gekoppeld. PDF, PNG of JPG · maximaal 4 MB per bestand.</p>
+            <p className="mt-1 text-sm text-slate-500">Dit bestand wordt rechtstreeks aan <strong>{product.description}</strong> gekoppeld. PDF, PNG of JPG · maximaal 20 MB per bestand.</p>
           </div>
 
           <label className="flex min-h-40 cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center hover:border-rose-400 hover:bg-rose-50/40">

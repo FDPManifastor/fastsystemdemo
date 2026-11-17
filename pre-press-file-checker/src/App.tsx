@@ -200,6 +200,7 @@ export default function App() {
   const [adminSubTab, setAdminSubTab] = useState<'files' | 'orders' | 'staff' | 'create_order'>('files');
   const [selectedFileKeys, setSelectedFileKeys] = useState<string[]>([]);
   const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(() => new Set());
+  const [uploadQrKey, setUploadQrKey] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<any | null>(null);
 
   // Real-time status tracking & portal states
@@ -1549,9 +1550,9 @@ export default function App() {
     const handleCustomerFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      if (file.size > 4 * 1024 * 1024) {
+      if (file.size > 20 * 1024 * 1024) {
         clearCustomerUpload();
-        setCustomerUploadError('Bestanden mogen maximaal 4 MB groot zijn.');
+        setCustomerUploadError('Bestanden mogen maximaal 20 MB groot zijn.');
         e.target.value = '';
         return;
       }
@@ -1886,7 +1887,7 @@ export default function App() {
                       <p className="text-xs font-bold text-slate-800">
                         Klik hier of sleep uw drukbestand voor de {customerUploadSide === 'front' ? 'voorkant' : 'achterkant'} hierheen
                       </p>
-                      <p className="text-[10px] text-slate-400 font-semibold font-mono">PDF, PNG of JPG &bull; maximaal 4 MB</p>
+                      <p className="text-[10px] text-slate-400 font-semibold font-mono">PDF, PNG of JPG &bull; maximaal 20 MB</p>
                     </div>
                   </div>
 
@@ -3384,6 +3385,7 @@ export default function App() {
                           vatIncluded?: boolean;
                           fixedTotal?: number;
                           id?: string;
+                          uploadToken?: string;
                           priceSource?: string;
                           prepressNote?: string;
                           widthMm?: number;
@@ -3590,6 +3592,27 @@ export default function App() {
                                                   )}
                                                   {line.priceSource && <span className="block text-[9px] text-slate-400">Prijs: {line.priceSource}</span>}
                                                   {line.prepressNote && <span className="block text-[9px] text-emerald-700">Pre-press: {line.prepressNote}</span>}
+                                                  {line.uploadToken && (() => {
+                                                    const qrKey = `${order.id}:${line.id || index}`;
+                                                    const uploadUrl = `${window.location.origin}/klantportal?token=${encodeURIComponent(line.uploadToken)}`;
+                                                    return (
+                                                      <span className="mt-1 block">
+                                                        <button type="button" onClick={() => setUploadQrKey(uploadQrKey === qrKey ? null : qrKey)} aria-expanded={uploadQrKey === qrKey} className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] font-bold text-slate-700 hover:bg-slate-50">
+                                                          {uploadQrKey === qrKey ? 'QR verbergen' : 'QR-code om bestand te uploaden'}
+                                                        </button>
+                                                        {uploadQrKey === qrKey && (
+                                                          <span className="mt-1 flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-2">
+                                                            <TrackingQr value={uploadUrl} size={120} />
+                                                            <span className="min-w-0 space-y-1">
+                                                              <span className="block text-[10px] text-slate-600">Klant scant dit en uploadt direct bij dit product.</span>
+                                                              <a href={uploadUrl} className="block break-all text-[9px] font-semibold text-blue-700 underline">{uploadUrl}</a>
+                                                              <button type="button" onClick={() => { navigator.clipboard?.writeText(uploadUrl).catch(() => undefined); }} className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-bold text-white">Link kopiëren</button>
+                                                            </span>
+                                                          </span>
+                                                        )}
+                                                      </span>
+                                                    );
+                                                  })()}
                                                 </span>
                                                 <strong className="shrink-0 text-right">
                                                   {(typeof line.fixedTotal === 'number' ? line.fixedTotal : Number(line.quantity) * Number(line.unitPrice) * (line.vatIncluded ? 1 : 1.21)).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}

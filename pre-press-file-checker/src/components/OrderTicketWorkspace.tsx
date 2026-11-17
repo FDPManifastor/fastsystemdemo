@@ -95,6 +95,14 @@ const ORDER_STATUSES = [
   'Geannuleerd',
 ];
 
+/** Welke calculator hoort bij dit product? Alleen stickers en banners hebben er een. */
+const calculatorKindFor = (line: { description: string; category: string }): 'sticker' | 'banner' | null => {
+  const text = `${line.description} ${line.category}`.toLowerCase();
+  if (/sticker|vinyl|raamfolie/.test(text)) return 'sticker';
+  if (/banner|roll-?up|spandoek|beachflag|frame ?banner/.test(text)) return 'banner';
+  return null;
+};
+
 const COMPANY_FOOTER = [
   'Bijlmerplein 375 | 1102 DK Amsterdam | Tel : 020 - 363 1445',
   'www.fdprintingcenter.nl | amsterdam@fdprintingcenter.nl',
@@ -328,6 +336,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       sku: product.sku,
       priceSource: product.price > 0 ? `FDPBRAIN${product.sku ? ` · SKU ${product.sku}` : ''}` : '',
     });
+    setCalculatorIndex(calculatorKindFor({ description: product.name, category: product.category }) ? lineIndex : null);
   };
 
   const applyCalculator = (lineIndex: number, applied: CalculatorApplied) => {
@@ -351,7 +360,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const chooseFile = (lineIndex: number, file: File | null) => {
     setError('');
     if (file && file.size > MAX_UPLOAD_BYTES) {
-      setError('Bestanden mogen maximaal 4 MB groot zijn.');
+      setError('Bestanden mogen maximaal 20 MB groot zijn.');
       return;
     }
     if (file && !getUploadFileType(file)) {
@@ -495,6 +504,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
           printSides: product.category === 'Sticker' ? 'single' : line.printSides,
         }
       : line));
+    setCalculatorIndex(calculatorKindFor({ description: product.name, category: product.category }) ? lineIndex : null);
   };
 
   const resetForm = () => {
@@ -691,6 +701,10 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       'FD Printing Center',
       ...COMPANY_FOOTER,
     ].join('\n');
+    if (!String(createdTicket.data.clientEmail || '').trim()) {
+      setError('Er is geen e-mailadres ingevuld voor deze klant.');
+      return;
+    }
     window.location.href = `mailto:${encodeURIComponent(String(createdTicket.data.clientEmail))}?subject=${encodeURIComponent(`Opdrachtbon ${createdTicket.data.order_number} · FD Printing Center`)}&body=${encodeURIComponent(emailBody)}`;
   };
 
@@ -963,7 +977,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 <input id="ticket-phone" type="tel" maxLength={100} value={phone} onChange={(event) => setPhone(event.target.value)} className={lineInput} />
               </FieldRow>
               <FieldRow label="Email:" htmlFor="ticket-email">
-                <input id="ticket-email" type="email" required maxLength={320} value={email} onChange={(event) => setEmail(event.target.value)} placeholder="naam@bedrijf.nl" className={lineInput} />
+                <input id="ticket-email" type="email" maxLength={320} value={email} onChange={(event) => setEmail(event.target.value)} placeholder="naam@bedrijf.nl (optioneel)" className={lineInput} />
               </FieldRow>
             </div>
 
@@ -1039,9 +1053,11 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                     </select>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <button type="button" onClick={() => setCalculatorIndex(calculatorIndex === index ? null : index)} aria-expanded={calculatorIndex === index} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
-                      <Calculator className="h-3.5 w-3.5" /> Calculator
-                    </button>
+                    {calculatorKindFor(line) && (
+                      <button type="button" onClick={() => setCalculatorIndex(calculatorIndex === index ? null : index)} aria-expanded={calculatorIndex === index} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
+                        <Calculator className="h-3.5 w-3.5" /> {calculatorKindFor(line) === 'banner' ? 'Banner berekenen' : 'Formaat en prijs berekenen'}
+                      </button>
+                    )}
                     {line.file ? (
                       <span className="inline-flex min-w-0 items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 py-0.5 pl-0.5 pr-1">
                         <FileThumb file={line.file} fileName={line.file.name} size={30} />
@@ -1067,6 +1083,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                         />
                       </label>
                     )}
+                    {!line.file && <span className="text-[10px] text-slate-500">of: na opslaan krijgt dit product een QR-code waarmee de klant zelf uploadt</span>}
                     {line.priceSource && <span className="text-[10px] text-slate-400">Prijs: {line.priceSource}</span>}
                   </div>
                 </div>
@@ -1103,9 +1120,10 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                   <Trash2 className="h-4 w-4" />
                 </button>
 
-                {calculatorIndex === index && (
+                {calculatorIndex === index && calculatorKindFor(line) && (
                   <PriceCalculatorPanel
-                    initialKind={line.category === 'Banner' ? 'banner' : 'sticker'}
+                    initialKind={calculatorKindFor(line) ?? 'sticker'}
+                    lockKind
                     onApply={(applied) => applyCalculator(index, applied)}
                     onClose={() => setCalculatorIndex(null)}
                   />
@@ -1118,7 +1136,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
               ? 'Productcatalogus laden…'
               : catalog.products.length
                 ? `${catalog.products.length} producten uit FDPBRAIN beschikbaar. Bestanden kunnen ook na het opslaan via de QR-code per product worden aangeleverd.`
-                : 'De productcatalogus uit Notion is nog niet gekoppeld; vul omschrijving en prijs met de hand in of gebruik de calculator.'}
+                : 'De productcatalogus uit Notion is nog niet gekoppeld; vul omschrijving en prijs met de hand in. Bij stickers en banners verschijnt vanzelf een calculator.'}
           </p>
 
           <button type="button" onClick={() => setLines((current) => [...current, emptyLine(products[0])])} className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs font-bold text-slate-600 hover:border-slate-500 hover:text-slate-900">
