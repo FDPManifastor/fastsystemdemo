@@ -176,6 +176,24 @@ export async function saveOrderToComputer(order: AnyOrder, includeFiles: boolean
     }
   }
 
+  if (order.extraInfo) {
+    entries.push({ path: 'Extra info.txt', data: new TextEncoder().encode(String(order.extraInfo)) });
+  }
+  if (includeFiles && Array.isArray(order.extraFiles)) {
+    for (const file of order.extraFiles) {
+      try {
+        const response = await fetch(`/api/orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(file.id)}`, { credentials: 'include' });
+        if (!response.ok) throw new Error(String(response.status));
+        let name = clean(String(file.fileName || file.id), 120);
+        if (used.has(`extra/${name}`)) name = `${file.id.slice(0, 6)}-${name}`;
+        used.add(`extra/${name}`);
+        entries.push({ path: `Extra bijlagen/${name}`, data: new Uint8Array(await response.arrayBuffer()) });
+      } catch {
+        failed.push(String(file.fileName || file.id));
+      }
+    }
+  }
+
   const picker = (window as any).showDirectoryPicker as undefined | ((options?: any) => Promise<any>);
   if (picker) {
     let root: any;

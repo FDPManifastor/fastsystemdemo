@@ -162,6 +162,14 @@ type SessionInfo = { sessionId: string; role: "admin" | "branch"; branch: string
 /** Beheerder en filiaal-login (zonder eigen medewerkersaccount) hebben alle rechten; een persoonlijke login alleen de aangevinkte. */
 const hasPerm = (info: SessionInfo, perm: StaffPermission) => info.role === "admin" || info.perms === null || info.perms.includes(perm);
 const actorName = (info: SessionInfo) => (info.role === "admin" ? "Beheerder" : info.staffName || `Filiaal ${info.branch}`);
+// "Ik ben ..." in de werkplaats: de naam moet een bestaande medewerker zijn (van het eigen filiaal, of zonder filiaal).
+async function resolveActor(info: SessionInfo, actingAs: unknown): Promise<string> {
+  if (info.role === "branch" && typeof actingAs === "string" && actingAs.trim()) {
+    const member = (await storage.listStaff()).find((item) => item.name === actingAs.trim() && (!item.branch || item.branch === info.branch));
+    if (member) return member.name;
+  }
+  return actorName(info);
+}
 const denyPerm = (res: express.Response) => res.status(403).json({ error: "U heeft hier geen rechten voor. Vraag de beheerder." });
 const parsePerms = (raw: string | null): StaffPermission[] => {
   // Nog niets ingesteld: standaard alle backoffice-rechten (opdrachtbon + opdrachten). De beheerder vinkt af wat niet mag.
@@ -255,6 +263,7 @@ async function startServer() {
   app.use(applySecurityHeaders);
   // Bestandsuploads (base64 in json) mogen groter zijn dan gewone verzoeken.
   app.use(["/api/public/orders", "/api/public/ticket-drafts"], express.json({ limit: "32mb" }));
+  app.use("/api/orders/:id/attachments", express.json({ limit: "32mb" }));
   app.use(express.json({ limit: "20mb" }));
   app.use(express.urlencoded({ limit: "32kb", extended: true }));
   app.use("/api", rateLimit(RATE_LIMIT_MAX_REQUESTS));
@@ -828,6 +837,52 @@ async function startServer() {
     return res.type(file.fileType).attachment(file.fileName).send(file.data);
   }));
 
+  // Extra bijlagen bij een opdracht (intern; de klant ziet ze niet).
+  app.post("/api/orders/:id/attachments", requireStaffSession, asyncRoute(async (req, res) => {
+    const info = res.locals.session as SessionInfo;
+    if (!hasPerm(info, "bestanden")) return denyPerm(res);
+    const current = await storage.getOrder(req.params.id);
+    if (!current || !canSeeOrder(current, info)) return res.status(404).json({ error: "Order not found." });
+    const file = validateCustomerFile(req.body?.file);
+    if (!file) return res.status(400).json({ error: "Upload een geldig PDF-, PNG- of JPG-bestand van maximaal 20 MB." });
+    const label = typeof req.body?.label === "string" ? req.body.label.trim().slice(0, 200) : "";
+    const actor = await resolveActor(info, req.body?.actingAs);
+    let limitReached = false;
+    const updated = await storage.updateOrder(req.params.id, (order) => {
+      const existing: any[] = Array.isArray((order as any).extraFiles) ? (order as any).extraFiles : [];
+      if (existing.length >= 30) { limitReached = true; return false; }
+      const fileId = crypto.randomBytes(12).toString("hex");
+      const uploadedAt = new Date().toISOString();
+      (order as any).extraFiles = [...existing, { id: fileId, fileName: file.fileName, fileType: file.fileType, size: file.size, label, by: actor, uploadedAt }];
+      order.history = Array.isArray(order.history) ? order.history : [];
+      order.history.push({ date: uploadedAt, status: order.status || "Ingediend", note: `Extra bijlage toegevoegd: ${file.fileName}${label ? ` (${label})` : ""}.`, internal: true, by: actor } as any);
+      const newFile: NewFile = { id: fileId, fileName: file.fileName, fileType: file.fileType, dataUrl: file.dataUrl };
+      return { addFiles: [newFile] };
+    });
+    if (limitReached) return res.status(400).json({ error: "Er zijn al 30 extra bijlagen toegevoegd." });
+    if (!updated) return res.status(404).json({ error: "Order not found." });
+    return res.json({ success: true, order: serializeAdminOrder(updated) });
+  }));
+
+  app.delete("/api/orders/:id/attachments/:fileId", requireStaffSession, asyncRoute(async (req, res) => {
+    const info = res.locals.session as SessionInfo;
+    if (!hasPerm(info, "bestanden")) return denyPerm(res);
+    if (!/^[a-f0-9]{24}$/.test(req.params.fileId)) return res.status(404).json({ error: "File not found." });
+    const current = await storage.getOrder(req.params.id);
+    if (!current || !canSeeOrder(current, info)) return res.status(404).json({ error: "Order not found." });
+    const target = (Array.isArray((current as any).extraFiles) ? (current as any).extraFiles : []).find((item: any) => item.id === req.params.fileId);
+    if (!target) return res.status(404).json({ error: "File not found." });
+    const actor = await resolveActor(info, req.body?.actingAs ?? req.query.actingAs);
+    const updated = await storage.updateOrder(req.params.id, (order) => {
+      (order as any).extraFiles = ((order as any).extraFiles || []).filter((item: any) => item.id !== req.params.fileId);
+      order.history = Array.isArray(order.history) ? order.history : [];
+      order.history.push({ date: new Date().toISOString(), status: order.status || "Ingediend", note: `Extra bijlage verwijderd: ${target.fileName}.`, internal: true, by: actor } as any);
+      return { removeFileIds: [req.params.fileId] };
+    });
+    if (!updated) return res.status(404).json({ error: "Order not found." });
+    return res.json({ success: true, order: serializeAdminOrder(updated) });
+  }));
+
   app.get("/api/public/orders/:trackingToken", asyncRoute(async (req, res) => {
     const token = req.params.trackingToken;
     if (!/^[a-f0-9]{48}$/.test(token)) {
@@ -924,12 +979,14 @@ async function startServer() {
 
   app.put("/api/orders/:id", requireStaffSession, asyncRoute(async (req, res) => {
     const info = res.locals.session as SessionInfo;
-    const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit, logNote } = req.body || {};
+    const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit, logNote, extraInfo, helpRequest, actingAs } = req.body || {};
+    const actor = await resolveActor(info, actingAs);
     const current = await storage.getOrder(req.params.id);
     if (!current || !canSeeOrder(current, info)) return res.status(404).json({ error: "Order not found." });
     if ((edit !== undefined || sharedWith !== undefined || moveToBranch !== undefined) && !hasPerm(info, "bon_aanpassen")) return denyPerm(res);
     if (payment !== undefined && !hasPerm(info, "betaling")) return denyPerm(res);
-    if ((status !== undefined || note !== undefined || assignedStaff !== undefined || logNote !== undefined) && !hasPerm(info, "status_wijzigen")) return denyPerm(res);
+    if ((status !== undefined || note !== undefined || assignedStaff !== undefined || logNote !== undefined || extraInfo !== undefined || helpRequest !== undefined) && !hasPerm(info, "status_wijzigen")) return denyPerm(res);
+    if (extraInfo !== undefined && (typeof extraInfo !== "string" || extraInfo.length > 3000)) return res.status(400).json({ error: "De extra info is te lang (maximaal 3000 tekens)." });
     if (logNote !== undefined && (typeof logNote !== "string" || logNote.length > 500)) return res.status(400).json({ error: "Invalid note." });
     if ((sharedWith !== undefined || moveToBranch !== undefined || edit !== undefined) && !canManageOrder(current, info)) {
       return res.status(403).json({ error: "Alleen het filiaal van deze opdracht of de beheerder kan dit aanpassen." });
@@ -961,6 +1018,36 @@ async function startServer() {
         payment.action === "mark-paid" || payment.action === "mark-unpaid"
       );
       if (!okAction) return res.status(400).json({ error: "Invalid payment update." });
+    }
+    const helpOpen = (Array.isArray(current.helpRequests) ? current.helpRequests : []) as any[];
+    if (helpRequest !== undefined) {
+      const hr = helpRequest as any;
+      const isAdmin = info.role === "admin";
+      if (!hr || typeof hr !== "object") return res.status(400).json({ error: "Ongeldige hulpvraag." });
+      if (hr.action === "create") {
+        const to = typeof hr.to === "string" ? hr.to.trim() : "";
+        const message = typeof hr.message === "string" ? hr.message.trim() : "";
+        if (!to || !message || message.length > 500) return res.status(400).json({ error: "Kies een collega en schrijf kort wat er moet gebeuren (max. 500 tekens)." });
+        const allowed = [orderBranch(current), ...(Array.isArray(current.sharedWith) ? current.sharedWith : []), info.branch];
+        const member = (await storage.listStaff()).find((item) => item.name === to && (!item.branch || allowed.includes(item.branch)));
+        if (!member) return res.status(400).json({ error: "Deze collega is niet gevonden." });
+      } else if (["accepted", "declined", "done", "cancel"].includes(hr.action)) {
+        const target = helpOpen.find((item) => item.id === hr.id);
+        if (!target) return res.status(404).json({ error: "Deze hulpvraag bestaat niet meer." });
+        if (hr.reply !== undefined && (typeof hr.reply !== "string" || hr.reply.length > 300)) return res.status(400).json({ error: "Het antwoord is te lang (max. 300 tekens)." });
+        if (hr.action === "accepted" || hr.action === "declined") {
+          if (target.status !== "open") return res.status(409).json({ error: "Deze hulpvraag is al beantwoord." });
+          if (!isAdmin && actor !== target.to) return res.status(403).json({ error: `Alleen ${target.to} kan dit beantwoorden. Kies bovenin wie je bent.` });
+        } else if (hr.action === "done") {
+          if (target.status !== "accepted") return res.status(409).json({ error: "Alleen een geaccepteerde hulpvraag kan klaar worden gemeld." });
+          if (!isAdmin && actor !== target.to && actor !== target.from) return res.status(403).json({ error: "Alleen de gevraagde collega of de aanvrager kan dit afronden." });
+        } else {
+          if (target.status !== "open") return res.status(409).json({ error: "Deze hulpvraag is al beantwoord." });
+          if (!isAdmin && actor !== target.from) return res.status(403).json({ error: "Alleen de aanvrager kan de vraag intrekken." });
+        }
+      } else {
+        return res.status(400).json({ error: "Ongeldige hulpvraag." });
+      }
     }
     if (status !== undefined && (typeof status !== "string" || status.length > 100)) {
       return res.status(400).json({ error: "Invalid status." });
@@ -1047,6 +1134,33 @@ async function startServer() {
         order.history.push({ date: new Date().toISOString(), status: order.status || "Ingediend", note: logNote.trim(), internal: true });
       }
 
+      if (typeof extraInfo === "string") {
+        (order as any).extraInfo = extraInfo.trim();
+        order.history.push({ date: new Date().toISOString(), status: order.status || "Ingediend", note: extraInfo.trim() ? "Extra info bij de specificatie aangepast." : "Extra info bij de specificatie verwijderd.", internal: true });
+      }
+
+      if (helpRequest) {
+        const hr = helpRequest as any;
+        const now = new Date().toISOString();
+        const list: any[] = Array.isArray((order as any).helpRequests) ? [...(order as any).helpRequests] : [];
+        const addNote = (text: string) => order.history.push({ date: now, status: order.status || "Ingediend", note: text, internal: true });
+        if (hr.action === "create") {
+          const item = { id: crypto.randomBytes(8).toString("hex"), from: actor, to: String(hr.to).trim(), message: String(hr.message).trim(), status: "open", createdAt: now };
+          list.push(item);
+          addNote(`Hulp gevraagd aan ${item.to}: ${item.message}`);
+        } else {
+          const item = list.find((entry) => entry.id === hr.id);
+          if (item) {
+            const reply = typeof hr.reply === "string" && hr.reply.trim() ? ` (${hr.reply.trim()})` : "";
+            if (hr.action === "accepted") { item.status = "accepted"; item.respondedAt = now; item.reply = hr.reply?.trim() || undefined; addNote(`${item.to} heeft de hulpvraag van ${item.from} geaccepteerd: ${item.message}${reply}`); }
+            if (hr.action === "declined") { item.status = "declined"; item.respondedAt = now; item.reply = hr.reply?.trim() || undefined; addNote(`${item.to} kan niet helpen met: ${item.message}${reply}`); }
+            if (hr.action === "done") { item.status = "done"; item.doneAt = now; addNote(`Hulpvraag afgerond (${item.to}): ${item.message}`); }
+            if (hr.action === "cancel") { item.status = "cancelled"; item.respondedAt = now; addNote(`Hulpvraag aan ${item.to} ingetrokken: ${item.message}`); }
+          }
+        }
+        (order as any).helpRequests = list.slice(-50);
+      }
+
       if (assignedStaff !== undefined) {
         order.assignedStaff = assignedStaff;
         order.history.push({
@@ -1059,7 +1173,7 @@ async function startServer() {
         });
       }
       // Wie deed het? Alleen zichtbaar in de backoffice, nooit voor de klant.
-      for (let index = historyStart; index < order.history.length; index += 1) (order.history[index] as any).by = actorName(info);
+      for (let index = historyStart; index < order.history.length; index += 1) (order.history[index] as any).by = actor;
     });
 
     if (!updated) {

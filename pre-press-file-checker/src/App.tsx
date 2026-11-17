@@ -46,6 +46,7 @@ import LiveFilePreview from './components/LiveFilePreview';
 import { FDLogo } from './components/FDLogo';
 import { renderPdfFile } from './utils/pdfLoader';
 // Zware onderdelen worden pas geladen als ze nodig zijn, zodat de eerste pagina sneller opent.
+import { HelpRequestBox, ExtraSpecBox, MyHelpBanner, ProgressMini, ProgressPanel, WhoBadge } from './components/OrderExtras';
 const OrderTicketWorkspace = lazy(() => import('./components/OrderTicketWorkspace'));
 import { saveOrderToComputer } from './utils/saveOrderFolder';
 import { BRANCH_DETAILS } from './utils/branches';
@@ -208,6 +209,9 @@ export default function App() {
   /** Wie is ingelogd: beheerder ziet alles, een filiaal alleen de eigen en gedeelde opdrachten. */
   const [sessionRole, setSessionRole] = useState<'admin' | 'branch'>('branch');
   const [sessionBranch, setSessionBranch] = useState<string>('');
+  /** "Ik ben ...": welke collega zit er achter deze (gedeelde) filiaalpc. Onthouden per apparaat. */
+  const [currentPerson, setCurrentPersonState] = useState<string>(() => { try { return localStorage.getItem('fd_person') || ''; } catch { return ''; } });
+  const setCurrentPerson = (name: string) => { setCurrentPersonState(name); try { if (name) localStorage.setItem('fd_person', name); else localStorage.removeItem('fd_person'); } catch { /* geen opslag */ } };
   const [loginBranch, setLoginBranch] = useState<string>('Amsterdam');
   const [branchFilter, setBranchFilter] = useState<string>('Alle');
   const [editingOrder, setEditingOrder] = useState<any | null>(null);
@@ -241,7 +245,7 @@ export default function App() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, actingAs: sessionRole === 'branch' && currentPerson ? currentPerson : undefined }),
       });
       if (!response.ok) {
         const failure = await response.json().catch(() => ({}));
@@ -255,6 +259,14 @@ export default function App() {
       return false;
     }
   };
+  const openOrder = (order: any) => {
+    setSearchQuery(String(order.id || order.order_number || ''));
+    setAdminCategoryFilter('All');
+    setOrderView('alle');
+    setAdminSubTab('orders');
+    setExpandedOrderIds(new Set([order.id]));
+    fetchAdminOrders();
+  };
   const logCustomerCall = async (order: any) => {
     const note = window.prompt('Klant gebeld. Wat is besproken? (mag leeg blijven)', '');
     if (note === null) return;
@@ -267,6 +279,7 @@ export default function App() {
       window.alert('Status is gezet. Er is geen e-mailadres bij deze klant bekend.');
       return;
     }
+    await putOrder(order.id, { logNote: 'Klant per e-mail ingelicht (mail geopend).' });
     const branchName = BRANCH_DETAILS[order.branch || 'Amsterdam'] ? (order.branch || 'Amsterdam') : 'Amsterdam';
     const info = BRANCH_DETAILS[branchName];
     const owedAmount = order.payment_status && order.payment_status !== 'Volledig betaald' ? Number(order.remaining ?? order.grand_total ?? 0) : 0;
@@ -818,6 +831,13 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
     setActiveFocusedSide((prev) => (prev === 'front' ? 'back' : 'front'));
   };
 
+  const refreshOrdersQuietly = async () => {
+    try {
+      const response = await fetch('/api/orders', { credentials: 'include' });
+      if (response.ok) setOrders(await response.json());
+    } catch { /* volgende ronde opnieuw */ }
+  };
+
   const fetchAdminOrders = async () => {
     setIsLoadingOrders(true);
     setAdminAuthError(null);
@@ -1000,10 +1020,13 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
           'Content-Type': 'application/json'
         },
         credentials: 'include',
-        body: JSON.stringify({ assignedStaff: staffName })
+        body: JSON.stringify({ assignedStaff: staffName, actingAs: sessionRole === 'branch' && currentPerson ? currentPerson : undefined })
       });
       if (response.ok) {
         fetchAdminOrders();
+      } else {
+        const failure = await response.json().catch(() => ({}));
+        window.alert(failure.error || 'Toewijzen lukt niet.');
       }
     } catch (e) {
       console.error("Staff assignment failed:", e);
@@ -1676,6 +1699,19 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
       .then((dataUrl) => setTrackingQrCode(dataUrl))
       .catch(() => setTrackingQrCode(''));
   }, [trackedOrder]);
+
+  // Houd opdrachten en hulpvragen vers zonder dat je zelf hoeft te verversen.
+  useEffect(() => {
+    if (!isAdminAuthenticated) return undefined;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') refreshOrdersQuietly();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [isAdminAuthenticated]);
+
+  useEffect(() => {
+    if (sessionRole === 'branch' && currentPerson && staffList.length > 0 && !staffList.some((member) => member.name === currentPerson)) setCurrentPerson('');
+  }, [staffList, sessionRole]);
 
   useEffect(() => {
     if (isAdminAuthenticated) {
@@ -3198,6 +3234,15 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                 </p>
               </div>
               
+              {isAdminAuthenticated && sessionRole === 'branch' && staffList.length > 0 && (
+                <label className={`mr-3 flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-extrabold ${currentPerson ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-rose-300 bg-rose-50 text-rose-800'}`}>
+                  Ik ben
+                  <select value={currentPerson} onChange={(event) => setCurrentPerson(event.target.value)} aria-label="Wie ben jij" className="min-h-[40px] rounded-lg border border-slate-300 bg-white px-2 text-sm font-bold text-slate-900">
+                    <option value="">Kies je naam…</option>
+                    {staffList.map((member) => <option key={member.id} value={member.name}>{member.name}</option>)}
+                  </select>
+                </label>
+              )}
               {isAdminAuthenticated && (
                 <span className="mr-3 rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-600">
                   {sessionRole === 'admin' ? 'Beheerder · alle filialen' : `Filiaal ${sessionBranch}${sessionStaffName ? ` · ${sessionStaffName}` : ''}`}
@@ -3316,6 +3361,10 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                   </div>
                 </div>
 
+                {sessionRole === 'branch' && <MyHelpBanner orders={orders} me={currentPerson} onOpenOrder={openOrder} act={(orderId, body) => putOrder(orderId, body)} />}
+                {sessionRole === 'branch' && !currentPerson && staffList.length > 0 && (
+                  <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-800">Kies bovenaan bij “Ik ben” wie je bent. Dan komen jouw naam en hulpvragen goed in het logboek en overzicht.</p>
+                )}
                 {/* Backoffice hoofdmenu: grote knoppen, geschikt voor touchscreen/tablet */}
                 <div className="grid grid-cols-2 gap-3 select-none font-sans sm:grid-cols-3 lg:grid-cols-5">
                   {([
@@ -3360,13 +3409,10 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                       isAdmin={isOwner}
                       onNewTicket={can('bon_maken') ? () => setAdminSubTab('create_order') : undefined}
                       onShowOrders={() => setAdminSubTab('orders')}
-                      onOpenOrder={(order) => {
-                        setSearchQuery(String(order.id || order.order_number || ''));
-                        setAdminCategoryFilter('All');
-                        setOrderView('alle');
-                        setAdminSubTab('orders');
-                        fetchAdminOrders();
-                      }}
+                      onOpenOrder={openOrder}
+                      staff={staffList}
+                      me={sessionRole === 'branch' ? currentPerson : ''}
+                      onHelpAction={(orderId, body) => putOrder(orderId, body)}
                     />
                   </Suspense>
                 ) : adminSubTab === 'files' ? (
@@ -3809,7 +3855,30 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                             className={`bg-white border border-slate-200 ${urgencyBorder(order)} rounded-2xl shadow-sm overflow-hidden hover:border-rose-200 hover:shadow-md transition-all`}
                           >
                             {/* Order Header banner */}
-                            <div className="bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between flex-wrap gap-3">
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              aria-expanded={isOrderExpanded}
+                              onClick={() => setExpandedOrderIds((previous) => {
+                                const next = new Set(previous);
+                                if (next.has(order.id)) next.delete(order.id);
+                                else next.add(order.id);
+                                return next;
+                              })}
+                              onKeyDown={(event) => {
+                                if (event.target !== event.currentTarget) return;
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  setExpandedOrderIds((previous) => {
+                                    const next = new Set(previous);
+                                    if (next.has(order.id)) next.delete(order.id);
+                                    else next.add(order.id);
+                                    return next;
+                                  });
+                                }
+                              }}
+                              className="bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between flex-wrap gap-3 cursor-pointer hover:bg-slate-50/60 select-none"
+                            >
                               <div className="flex min-w-0 items-center gap-3">
                                 <span className="shrink-0 font-black text-xs tracking-wide text-white font-mono bg-brand-red px-2.5 py-1 rounded-md">
                                   {order.id}
@@ -3832,6 +3901,7 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                                     <Clock className="w-3 h-3 text-slate-400" />
                                     {formattedDate}
                                   </span>
+                                  <ProgressMini order={order} />
                                 </div>
                               </div>
 
@@ -3844,24 +3914,14 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                                   {order.printSides === 'double' ? '↕ DUBBELZIJDIG' : '↑ ENKELZIJDIG'}
                                 </span>
 
-                                <button
-                                  type="button"
-                                  onClick={() => setExpandedOrderIds((previous) => {
-                                    const next = new Set(previous);
-                                    if (next.has(order.id)) next.delete(order.id);
-                                    else next.add(order.id);
-                                    return next;
-                                  })}
-                                  aria-expanded={isOrderExpanded}
-                                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-4 text-xs font-bold text-brand-red hover:bg-rose-100 transition-colors cursor-pointer"
-                                >
-                                  {isOrderExpanded ? 'Details verbergen' : 'Details bekijken'}
+                                <span className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-4 text-xs font-bold text-brand-red">
+                                  {isOrderExpanded ? 'Inklappen' : 'Alles bekijken'}
                                   <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isOrderExpanded ? 'rotate-180' : ''}`} />
-                                </button>
+                                </span>
 
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteOrder(order.id)}
+                                  onClick={(event) => { event.stopPropagation(); handleDeleteOrder(order.id); }}
                                   className="p-1.5 bg-white border border-slate-200 hover:bg-rose-50 hover:border-rose-200 text-slate-500 hover:text-brand-red rounded-lg transition-colors cursor-pointer"
                                   title="Bestelling Verwijderen"
                                 >
@@ -3872,6 +3932,7 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
 
                             {/* Snelle acties: groot en met één tik */}
                             <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-3 font-sans">
+                              <WhoBadge order={order} me={sessionRole === 'branch' ? currentPerson : ''} canAssign={can('status_wijzigen')} onAssign={(name) => handleAssignStaff(order.id, name)} />
                               <span className="mr-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-extrabold text-slate-800">{order.status || 'Ingediend'}</span>
                               {NEXT_STATUS[order.status || 'Ingediend'] && can('status_wijzigen') && (
                                 <button
@@ -3903,6 +3964,10 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
 
                             {isOrderExpanded && (
                               <div id={`order-details-${order.id}`}>
+                            <div className="grid gap-4 border-b border-slate-100 bg-slate-50/40 p-6 pb-5 lg:grid-cols-2">
+                              <ProgressPanel order={order} />
+                              <HelpRequestBox order={order} staff={staffList} me={sessionRole === 'branch' ? currentPerson : ''} isAdmin={isOwner} canAsk={can('status_wijzigen') && (isOwner || Boolean(currentPerson))} act={(body) => putOrder(order.id, body)} />
+                            </div>
                             {/* Order Details Grid layout */}
                             <div className="p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
                               {/* Left Info Column: Client Info */}
@@ -4218,6 +4283,8 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                                       {order.clientComments ? `"${order.clientComments}"` : 'Geen specifieke opmerkingen opgegeven.'}
                                     </p>
                                   </div>
+
+                                  <ExtraSpecBox order={order} me={sessionRole === 'branch' ? currentPerson : ''} canEdit={can('status_wijzigen')} canFiles={can('bestanden')} act={(body) => putOrder(order.id, body)} onChanged={fetchAdminOrders} />
                                 </div>
                               </div>
 
