@@ -212,7 +212,13 @@ export default function App() {
   /** "Ik ben ...": welke collega zit er achter deze (gedeelde) filiaalpc. Onthouden per apparaat. */
   const [currentPerson, setCurrentPersonState] = useState<string>(() => { try { return localStorage.getItem('fd_person') || ''; } catch { return ''; } });
   const setCurrentPerson = (name: string) => { setCurrentPersonState(name); try { if (name) localStorage.setItem('fd_person', name); else localStorage.removeItem('fd_person'); } catch { /* geen opslag */ } };
-  const [loginBranch, setLoginBranch] = useState<string>('Amsterdam');
+  const [loginBranch, setLoginBranch] = useState<string>(() => {
+    // Snelkoppeling per filiaal: /backoffice?filiaal=Utrecht kiest dat filiaal alvast in het inlogscherm.
+    try {
+      const wanted = new URLSearchParams(window.location.search).get('filiaal')?.toLowerCase();
+      return ['Amsterdam', 'Utrecht', 'Hoogvliet'].find((branch) => branch.toLowerCase() === wanted) || 'Amsterdam';
+    } catch { return 'Amsterdam'; }
+  });
   const [branchFilter, setBranchFilter] = useState<string>('Alle');
   const [editingOrder, setEditingOrder] = useState<any | null>(null);
   const [clientBranch, setClientBranch] = useState('');
