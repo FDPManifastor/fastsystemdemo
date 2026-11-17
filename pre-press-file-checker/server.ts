@@ -924,12 +924,13 @@ async function startServer() {
 
   app.put("/api/orders/:id", requireStaffSession, asyncRoute(async (req, res) => {
     const info = res.locals.session as SessionInfo;
-    const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit } = req.body || {};
+    const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit, logNote } = req.body || {};
     const current = await storage.getOrder(req.params.id);
     if (!current || !canSeeOrder(current, info)) return res.status(404).json({ error: "Order not found." });
     if ((edit !== undefined || sharedWith !== undefined || moveToBranch !== undefined) && !hasPerm(info, "bon_aanpassen")) return denyPerm(res);
     if (payment !== undefined && !hasPerm(info, "betaling")) return denyPerm(res);
-    if ((status !== undefined || note !== undefined || assignedStaff !== undefined) && !hasPerm(info, "status_wijzigen")) return denyPerm(res);
+    if ((status !== undefined || note !== undefined || assignedStaff !== undefined || logNote !== undefined) && !hasPerm(info, "status_wijzigen")) return denyPerm(res);
+    if (logNote !== undefined && (typeof logNote !== "string" || logNote.length > 500)) return res.status(400).json({ error: "Invalid note." });
     if ((sharedWith !== undefined || moveToBranch !== undefined || edit !== undefined) && !canManageOrder(current, info)) {
       return res.status(403).json({ error: "Alleen het filiaal van deze opdracht of de beheerder kan dit aanpassen." });
     }
@@ -1040,6 +1041,10 @@ async function startServer() {
           note: `Opdrachtbon aangepast${info.role === "branch" ? ` (${info.branch})` : " door de beheerder"}.`,
           internal: true
         });
+      }
+
+      if (typeof logNote === "string" && logNote.trim()) {
+        order.history.push({ date: new Date().toISOString(), status: order.status || "Ingediend", note: logNote.trim(), internal: true });
       }
 
       if (assignedStaff !== undefined) {

@@ -48,6 +48,7 @@ import { renderPdfFile } from './utils/pdfLoader';
 // Zware onderdelen worden pas geladen als ze nodig zijn, zodat de eerste pagina sneller opent.
 const OrderTicketWorkspace = lazy(() => import('./components/OrderTicketWorkspace'));
 import { saveOrderToComputer } from './utils/saveOrderFolder';
+import { BRANCH_DETAILS } from './utils/branches';
 const BackofficeOverview = lazy(() => import('./components/BackofficeOverview'));
 const TicketProductUploadPortal = lazy(() => import('./components/TicketProductUploadPortal'));
 const ImpositionModal = lazy(() => import('./components/ImpositionModal'));
@@ -212,6 +213,100 @@ export default function App() {
   const [editingOrder, setEditingOrder] = useState<any | null>(null);
   const [clientBranch, setClientBranch] = useState('');
   const [savingOrderId, setSavingOrderId] = useState<string | null>(null);
+  const NEXT_STATUS: Record<string, { to: string; label: string }> = {
+    Ingediend: { to: 'In Controle', label: 'Start controle' },
+    'In Controle': { to: 'Preflight Goedgekeurd', label: 'Bestand goedkeuren' },
+    'Actie Vereist': { to: 'In Controle', label: 'Opnieuw controleren' },
+    'Preflight Goedgekeurd': { to: 'In Druk', label: 'Naar de druk' },
+    'In Druk': { to: 'Klaar voor Afhalen', label: 'Klaar voor afhalen' },
+    'Klaar voor Afhalen': { to: 'Verzonden', label: 'Afgehaald / verzonden' },
+  };
+  const urgencyBorder = (o: any) => {
+    const status = String(o.status || 'Ingediend');
+    if (status === 'Verzonden') return 'border-l-8 border-l-slate-200';
+    if (status === 'Actie Vereist') return 'border-l-8 border-l-rose-500';
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(o.delivery_date || ''));
+    if (match && status !== 'Klaar voor Afhalen') {
+      const due = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).getTime();
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      if (due < today) return 'border-l-8 border-l-rose-500';
+      if (due === today) return 'border-l-8 border-l-orange-400';
+    }
+    return 'border-l-8 border-l-emerald-300';
+  };
+  const putOrder = async (orderId: string, body: Record<string, unknown>) => {
+    try {
+      const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        window.alert(failure.error || 'Dit lukt niet.');
+        return false;
+      }
+      await fetchAdminOrders();
+      return true;
+    } catch {
+      window.alert('De server is niet bereikbaar.');
+      return false;
+    }
+  };
+  const logCustomerCall = async (order: any) => {
+    const note = window.prompt('Klant gebeld. Wat is besproken? (mag leeg blijven)', '');
+    if (note === null) return;
+    await putOrder(order.id, { logNote: `Klant gebeld${note.trim() ? `: ${note.trim()}` : '.'}` });
+  };
+  const markReadyAndMail = async (order: any) => {
+    const ok = await putOrder(order.id, { status: 'Klaar voor Afhalen', note: 'Uw opdracht ligt klaar om af te halen.' });
+    if (!ok) return;
+    if (!order.clientEmail) {
+      window.alert('Status is gezet. Er is geen e-mailadres bij deze klant bekend.');
+      return;
+    }
+    const branchName = BRANCH_DETAILS[order.branch || 'Amsterdam'] ? (order.branch || 'Amsterdam') : 'Amsterdam';
+    const info = BRANCH_DETAILS[branchName];
+    const owedAmount = order.payment_status && order.payment_status !== 'Volledig betaald' ? Number(order.remaining ?? order.grand_total ?? 0) : 0;
+    const body = [
+      `Beste ${order.contact_person || order.clientName || 'klant'},`,
+      '',
+      `Uw opdracht ${order.order_number || order.id} ligt klaar om af te halen bij FD Printing Center ${branchName}.`,
+      owedAmount > 0 ? `Er staat nog € ${owedAmount.toFixed(2).replace('.', ',')} open; dit kunt u bij het afhalen voldoen.` : '',
+      '',
+      'Met vriendelijke groet,',
+      `FD Printing Center ${branchName}`,
+      info.address.replace(' | ', ', '),
+      `Tel: ${info.phone}`,
+      info.email,
+    ].filter((line, index, all) => line !== '' || all[index - 1] !== '').join('\n');
+    window.location.href = `mailto:${encodeURIComponent(String(order.clientEmail))}?subject=${encodeURIComponent(`Uw opdracht ${order.order_number || order.id} ligt klaar`)}&body=${encodeURIComponent(body)}`;
+  };
+  const printOrderLabel = async (order: any) => {
+    const win = window.open('', '_blank', 'width=480,height=700');
+    if (!win) { window.alert('Sta pop-ups toe om het label te printen.'); return; }
+    let lines: any[] = [];
+    if (order.order_type === 'opdrachtbon') { try { lines = JSON.parse(order.products_json || '[]'); } catch { lines = []; } }
+    const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+    const qr = await QRCode.toDataURL(String(order.order_number || order.id), { margin: 1, width: 300 });
+    const products = lines.length
+      ? lines.map((l) => `<li>${esc(l.quantity)}× ${esc(l.description)}</li>`).join('')
+      : `<li>${esc(order.clientQuantity || '')}× ${esc(order.selectedProductName || 'Product')}</li>`;
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Label ${esc(order.order_number || order.id)}</title>
+<style>@page{size:100mm 150mm;margin:6mm}body{font-family:Arial,sans-serif;margin:0}h1{font-size:34px;margin:0}h2{font-size:20px;margin:4px 0 8px}ul{padding-left:18px;font-size:16px}.meta{font-size:15px;margin:3px 0}.qr{text-align:center}.qr img{width:42mm}.tag{display:inline-block;border:2px solid #000;padding:2px 8px;font-weight:bold;margin-top:6px}</style></head><body>
+<h1>${esc(order.order_number || order.id)}</h1><h2>${esc(order.contact_person || order.clientName || '')}</h2>
+<ul>${products}</ul>
+<p class="meta"><b>Filiaal:</b> ${esc(order.branch || 'Amsterdam')}</p>
+${order.delivery_date ? `<p class="meta"><b>Leverdatum:</b> ${esc(order.delivery_date)}</p>` : ''}
+${order.delivery_method ? `<p class="meta"><b>Levering:</b> ${esc(order.delivery_method)}</p>` : ''}
+${order.assignedStaff ? `<p class="meta"><b>Medewerker:</b> ${esc(order.assignedStaff)}</p>` : ''}
+${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''}
+<div class="qr"><img src="${qr}" alt="QR"><div class="tag">${esc(order.status || 'Ingediend')}</div></div>
+<script>window.onload=function(){setTimeout(function(){window.print()},200)}</script></body></html>`);
+    win.document.close();
+  };
   type OrderView = 'lopend' | 'actie' | 'klaar' | 'onbetaald' | 'afgerond' | 'alle';
   const [orderView, setOrderView] = useState<OrderView>('lopend');
   const orderStatusOf = (o: any) => String(o.status || 'Ingediend');
@@ -3709,7 +3804,7 @@ export default function App() {
                         return (
                           <div
                             key={order.id}
-                            className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden hover:border-rose-200 hover:shadow-md transition-all"
+                            className={`bg-white border border-slate-200 ${urgencyBorder(order)} rounded-2xl shadow-sm overflow-hidden hover:border-rose-200 hover:shadow-md transition-all`}
                           >
                             {/* Order Header banner */}
                             <div className="bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between flex-wrap gap-3">
@@ -3756,7 +3851,7 @@ export default function App() {
                                     return next;
                                   })}
                                   aria-expanded={isOrderExpanded}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[10px] font-bold text-brand-red hover:bg-rose-100 transition-colors cursor-pointer"
+                                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-4 text-xs font-bold text-brand-red hover:bg-rose-100 transition-colors cursor-pointer"
                                 >
                                   {isOrderExpanded ? 'Details verbergen' : 'Details bekijken'}
                                   <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isOrderExpanded ? 'rotate-180' : ''}`} />
@@ -3771,6 +3866,37 @@ export default function App() {
                                   <Trash2 className="w-4 h-4" />
                                 </button>
                               </div>
+                            </div>
+
+                            {/* Snelle acties: groot en met één tik */}
+                            <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-3 font-sans">
+                              <span className="mr-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-extrabold text-slate-800">{order.status || 'Ingediend'}</span>
+                              {NEXT_STATUS[order.status || 'Ingediend'] && can('status_wijzigen') && (
+                                <button
+                                  type="button"
+                                  onClick={() => putOrder(order.id, { status: NEXT_STATUS[order.status || 'Ingediend'].to })}
+                                  className="min-h-[48px] rounded-xl bg-slate-900 px-5 text-sm font-extrabold text-white hover:bg-slate-700 active:scale-[0.98]"
+                                >
+                                  {NEXT_STATUS[order.status || 'Ingediend'].label} →
+                                </button>
+                              )}
+                              {['In Druk', 'Preflight Goedgekeurd'].includes(order.status || 'Ingediend') && can('status_wijzigen') && (
+                                <button
+                                  type="button"
+                                  onClick={() => markReadyAndMail(order)}
+                                  className="min-h-[48px] rounded-xl bg-emerald-700 px-4 text-sm font-extrabold text-white hover:bg-emerald-800 active:scale-[0.98]"
+                                >
+                                  ✉ Klaar + klant mailen
+                                </button>
+                              )}
+                              {can('status_wijzigen') && (
+                                <button type="button" onClick={() => logCustomerCall(order)} className="min-h-[48px] rounded-xl border border-slate-300 bg-white px-4 text-sm font-extrabold text-slate-800 hover:bg-slate-50 active:scale-[0.98]">
+                                  📞 Klant gebeld
+                                </button>
+                              )}
+                              <button type="button" onClick={() => printOrderLabel(order)} className="min-h-[48px] rounded-xl border border-slate-300 bg-white px-4 text-sm font-extrabold text-slate-800 hover:bg-slate-50 active:scale-[0.98]">
+                                🏷 Label printen
+                              </button>
                             </div>
 
                             {isOrderExpanded && (
@@ -4015,7 +4141,7 @@ export default function App() {
                                       <option value="">-- Nog niemand --</option>
                                       {staffList.filter((m) => !m.branch || m.branch === (order.branch || 'Amsterdam') || m.name === order.assignedStaff).map((m) => (
                                         <option key={m.id} value={m.name}>
-                                          {m.name} ({m.role})
+                                          {isOwner ? `${m.name} (${m.role})` : m.name}
                                         </option>
                                       ))}
                                     </select>
