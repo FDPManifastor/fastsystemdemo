@@ -5,6 +5,7 @@ import { Calculator, Eraser, QrCode, Paperclip, Plus, Printer, Save, Send, Shiel
 import { PrintProduct } from '../types';
 import { FDLogo } from './FDLogo';
 import type { CatalogProduct } from '../utils/pricing';
+import { calculateSelfservicePrint, SELFSERVICE_PAPER } from '../utils/pricing';
 import {
   CalculatorApplied,
   FileThumb,
@@ -117,6 +118,44 @@ const calculatorKindFor = (line: { description: string; category: string }): 'st
   if (/banner|roll-?up|spandoek|beachflag|frame ?banner/.test(text)) return 'banner';
   return null;
 };
+
+/** Printen volgens de selfservice-staffel: prijs per pagina hangt af van het aantal. */
+function SelfservicePrintBox({ quantity, doubleSided, size, onApply }: {
+  quantity: number; doubleSided: boolean; size: 'A4' | 'A3';
+  onApply: (result: { description: string; source: string; total: number; sheets: number; size: 'A4' | 'A3'; doubleSided: boolean }) => void;
+}) {
+  const [color, setColor] = useState(false);
+  const [paperId, setPaperId] = useState('standaard');
+  const [format, setFormat] = useState<'A4' | 'A3'>(size);
+  const [sides, setSides] = useState(doubleSided);
+  const result = calculateSelfservicePrint({ size: format, color, doubleSided: sides, sheets: quantity, paperId });
+  const money = (value: number) => `€ ${value.toFixed(2).replace('.', ',')}`;
+  const chip = (active: boolean) => `min-h-[40px] rounded-lg border px-3 text-xs font-extrabold ${active ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'}`;
+  return (
+    <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-2.5">
+      <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">Printen (selfservice-staffel)</p>
+      <div className="flex flex-wrap gap-1.5">
+        <button type="button" className={chip(!color)} onClick={() => setColor(false)}>Zwart-wit</button>
+        <button type="button" className={chip(color)} onClick={() => setColor(true)}>Kleur</button>
+        <button type="button" className={chip(format === 'A4')} onClick={() => setFormat('A4')}>A4</button>
+        <button type="button" className={chip(format === 'A3')} onClick={() => setFormat('A3')}>A3</button>
+        <button type="button" className={chip(!sides)} onClick={() => setSides(false)}>Enkelzijdig</button>
+        <button type="button" className={chip(sides)} onClick={() => setSides(true)}>Dubbelzijdig</button>
+        <select value={paperId} onChange={(event) => setPaperId(event.target.value)} aria-label="Papier" className="min-h-[40px] rounded-lg border border-slate-300 bg-white px-2 text-xs font-bold">
+          {SELFSERVICE_PAPER.map((paper) => <option key={paper.id} value={paper.id}>{paper.name}</option>)}
+        </select>
+      </div>
+      {result.valid ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <p className="text-slate-700">
+            {result.pages} pagina's × {money(result.rate)}{result.surcharge > 0 ? ` + papiertoeslag ${money(result.surcharge)}` : ''} = <strong className="text-base text-slate-900">{money(result.total)}</strong> <span className="text-slate-500">(incl. btw)</span>
+          </p>
+          <button type="button" onClick={() => onApply({ description: result.description, source: result.source, total: result.total, sheets: quantity, size: format, doubleSided: sides })} className="min-h-[40px] rounded-lg bg-[#e31c24] px-4 text-xs font-extrabold text-white hover:bg-[#b8141a]">Prijs overnemen</button>
+        </div>
+      ) : <p className="text-xs text-slate-500">{result.warning}</p>}
+    </div>
+  );
+}
 
 const DRAFT_STORAGE_KEY = 'fd_bon_concept_v1';
 const DRAFT_KEEP_MS = 8 * 60 * 60 * 1000;
@@ -1353,6 +1392,32 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                     <span>Product berekenen</span>
                     <button type="button" onClick={() => setSpecOpenIndex(null)} className="rounded px-2 py-0.5 normal-case tracking-normal text-slate-600 hover:bg-slate-200">Sluiten ✕</button>
                   </div>
+                  <label className="flex items-center gap-2 text-xs font-bold text-slate-600">
+                    Aantal
+                    <input type="number" min="1" max="100000" step="1" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} aria-label={`Aantal in berekening regel ${index + 1}`} className="min-h-[40px] w-28 rounded-lg border border-slate-300 bg-white px-2 text-sm font-bold tabular-nums" />
+                  </label>
+                  {!calculatorKindFor(line) && (
+                    <SelfservicePrintBox
+                      key={`${index}-${line.quantity}`}
+                      quantity={Number(line.quantity)}
+                      doubleSided={line.printSides === 'double'}
+                      size={Number(line.width) >= 250 || Number(line.height) >= 350 ? 'A3' : 'A4'}
+                      onApply={(applied) => {
+                        const qty = Number(line.quantity);
+                        updateLine(index, {
+                          description: line.description || applied.description,
+                          category: line.category || 'Print',
+                          width: applied.size === 'A4' ? '210' : '297',
+                          height: applied.size === 'A4' ? '297' : '420',
+                          printSides: applied.doubleSided ? 'double' : 'single',
+                          price: (applied.total / qty).toFixed(2).replace('.', ','),
+                          vatIncluded: true,
+                          fixedTotal: applied.total,
+                          priceSource: applied.source,
+                        });
+                      }}
+                    />
+                  )}
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
                     <select value={line.productId} onChange={(event) => handleProductChange(index, event.target.value)} aria-label={`Productsoort regel ${index + 1}`} className="rounded border border-slate-200 bg-slate-50 px-1.5 py-1 text-xs">
                       {!products.some((product) => product.id === line.productId) && <option value={line.productId}>Eigen formaat</option>}

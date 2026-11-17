@@ -224,3 +224,46 @@ export function calculatePrice(input: CalculatorInput): CalculatorResult {
     source: `Bannercalculator · ${material.name} · ${size} · ${quantity} st`,
   };
 }
+
+/* ------------------- Selfservice-staffel (printen A4/A3) ------------------- */
+/** Dezelfde staffels als de prijslijst van het selfservice-systeem (prijs per pagina, op basis van het totaal aantal pagina's). */
+export const SELFSERVICE_BW_TIERS = [
+  { upTo: 150, a4: 0.15, a3: 0.30 }, { upTo: 300, a4: 0.13, a3: 0.25 }, { upTo: 500, a4: 0.11, a3: 0.22 },
+  { upTo: 750, a4: 0.10, a3: 0.20 }, { upTo: 1000, a4: 0.09, a3: 0.18 }, { upTo: Infinity, a4: 0.07, a3: 0.14 },
+];
+export const SELFSERVICE_COLOR_TIERS = [
+  { upTo: 50, a4: 0.49, a3: 0.98 }, { upTo: 75, a4: 0.45, a3: 0.90 }, { upTo: 99, a4: 0.40, a3: 0.80 },
+  { upTo: 249, a4: 0.35, a3: 0.70 }, { upTo: 499, a4: 0.30, a3: 0.60 }, { upTo: 999, a4: 0.27, a3: 0.54 },
+  { upTo: Infinity, a4: 0.25, a3: 0.50 },
+];
+/** Toeslag per vel voor dikker papier. */
+export const SELFSERVICE_PAPER = [
+  { id: 'standaard', name: 'Standaard papier', a4: 0, a3: 0 },
+  { id: '100', name: '100 gr', a4: 0.10, a3: 0.20 },
+  { id: '120', name: '120 gr', a4: 0.15, a3: 0.30 },
+  { id: '160', name: '160 gr', a4: 0.25, a3: 0.49 },
+  { id: '250', name: '250 gr', a4: 0.35, a3: 0.70 },
+  { id: '300', name: '300 gr', a4: 0.45, a3: 0.90 },
+] as const;
+
+export function calculateSelfservicePrint(input: { size: 'A4' | 'A3'; color: boolean; doubleSided: boolean; sheets: number; paperId: string }) {
+  const { size, color, doubleSided, sheets } = input;
+  if (!Number.isInteger(sheets) || sheets <= 0) return { valid: false as const, warning: 'Vul een geldig aantal in.' };
+  const pages = sheets * (doubleSided ? 2 : 1);
+  const tiers = color ? SELFSERVICE_COLOR_TIERS : SELFSERVICE_BW_TIERS;
+  const tier = tiers.find((entry) => pages <= entry.upTo) ?? tiers[tiers.length - 1];
+  const rate = size === 'A4' ? tier.a4 : tier.a3;
+  const paper = SELFSERVICE_PAPER.find((entry) => entry.id === input.paperId) ?? SELFSERVICE_PAPER[0];
+  const surcharge = (size === 'A4' ? paper.a4 : paper.a3) * sheets;
+  const total = Math.round((pages * rate + surcharge) * 100) / 100;
+  return {
+    valid: true as const,
+    warning: '',
+    pages,
+    rate,
+    surcharge,
+    total,
+    description: `Printen ${color ? 'kleur' : 'zwart-wit'} ${size}${paper.id === 'standaard' ? '' : ` ${paper.name}`}${doubleSided ? ' dubbelzijdig' : ''}`,
+    source: `Selfservice-staffel · ${color ? 'kleur' : 'zwart-wit'} ${size} · ${pages} pagina's à € ${rate.toFixed(2).replace('.', ',')}${surcharge ? ` · papiertoeslag € ${surcharge.toFixed(2).replace('.', ',')}` : ''}`,
+  };
+}
