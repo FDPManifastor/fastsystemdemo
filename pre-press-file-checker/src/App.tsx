@@ -181,7 +181,7 @@ export default function App() {
     const path = window.location.pathname.replace(/\/+$/, '') || '/';
     if (path === '/orders' || path === '/backoffice') return 'admin';
     if (path === '/klantportal') return 'client';
-    if (path === '/opdrachtbon') return 'ticket';
+    if (path === '/opdrachtbon') return 'admin';
     return 'landing';
   };
   // De pagina staat in de adresbalk: verversen blijft op dezelfde pagina en terug-knop werkt.
@@ -189,7 +189,7 @@ export default function App() {
   useEffect(() => {
     const wanted = PORTAL_PATHS[activePortal];
     const current = window.location.pathname.replace(/\/+$/, '') || '/';
-    if (current !== wanted && !(activePortal === 'admin' && current === '/orders')) {
+    if (current !== wanted && !(activePortal === 'admin' && (current === '/orders' || current === '/opdrachtbon'))) {
       window.history.pushState({}, '', wanted + (activePortal === 'client' ? window.location.search : ''));
     }
   }, [activePortal]);
@@ -271,9 +271,11 @@ export default function App() {
   const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [adminCategoryFilter, setAdminCategoryFilter] = useState<string>('All');
+  const startedOnTicketRoute = window.location.pathname.replace(/\/+$/, '') === '/opdrachtbon';
   const [adminSubTab, setAdminSubTabState] = useState<'files' | 'orders' | 'staff' | 'create_order'>(() => {
     try {
       const saved = window.sessionStorage.getItem('fd_admin_tab');
+      if (startedOnTicketRoute) return 'create_order';
       return saved === 'orders' || saved === 'staff' || saved === 'create_order' || saved === 'files' ? saved : 'files';
     } catch { return 'files'; }
   });
@@ -2455,7 +2457,7 @@ export default function App() {
             >
               <button
                 type="button"
-                onClick={() => setActivePortal('ticket')}
+                onClick={() => { setAdminSubTab('create_order'); setActivePortal('admin'); if (isAdminAuthenticated) fetchAdminOrders(); }}
                 className="w-full h-full text-left bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-rose-500/60 rounded-3xl p-8 flex flex-col justify-between gap-6 cursor-pointer transition-all duration-300 shadow-xl group hover:shadow-rose-500/5 relative overflow-hidden"
               >
                 <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/5 rounded-full blur-2xl group-hover:bg-rose-500/10 transition-colors"></div>
@@ -3233,7 +3235,7 @@ export default function App() {
                     }`}
                   >
                     <PlusCircle className={`w-3.5 h-3.5 ${adminSubTab === 'create_order' ? 'text-white' : 'text-brand-red'}`} />
-                    <span className="font-bold">Handmatige Opdracht</span>
+                    <span className="font-bold">Opdrachtbon</span>
                   </button>}
                 </div>
 
@@ -4664,349 +4666,19 @@ export default function App() {
                   </div>
                 </div>
             ) : (
-                /* CREATE MANUAL ORDER WORKSPACE VIEW */
-                <div className="space-y-6 animate-fade-in font-sans">
-                  <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 shadow-3xs text-left">
-                    <div className="mb-6">
-                      <h3 className="text-base font-extrabold text-slate-905 border-none">
-                        Nieuwe Handmatige Opdracht Aanmaken
-                      </h3>
-                      <p className="text-xs text-slate-500 mt-1 max-w-2xl">
-                        Maak direct een opdracht aan voor een klant. Nadat de opdracht is aangemaakt, genereert het systeem een Unieke QR-code en live status tracking link. De klant kan hiermee zelf bestanden aanleveren en live voortgang volgen.
-                      </p>
-                    </div>
-
-                    {manualCreatedOrder ? (
-                      /* SUCCESS VIEW FOR MANUAL ORDER CREATED */
-                      <div className="bg-emerald-50 border-2 border-emerald-500 rounded-3xl p-6 space-y-6 animate-fade-in">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold text-lg">
-                            ✓
-                          </div>
-                          <div>
-                            <h4 className="font-extrabold text-sm sm:text-base text-emerald-950">
-                              Order #{manualCreatedOrder.id} Succesvol Aangemaakt!
-                            </h4>
-                            <p className="text-xs text-emerald-800">
-                              De QR-code en tracking link staan hieronder gereed voor de klant.
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center bg-white p-6 rounded-2xl border border-emerald-100 shadow-sm">
-                          <div className="space-y-4 text-left">
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block font-mono">LIVE QR CODE VOOR DE KLANT</span>
-                            <div className="w-36 h-36 border border-slate-205 p-2 rounded-xl bg-white shadow-4xs mx-auto md:mx-0">
-                                  <TrackingQr value={`${window.location.origin}/klantportal?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`} size={150} />
-                            </div>
-                            <p className="text-[11px] text-slate-500 leading-relaxed font-sans">
-                              Laat de klant deze QR-code scannen met hun smartphone of print deze op de bon. Zij kunnen direct op hun telefoon de bestanden uploaden en de pre-press status inzien.
-                            </p>
-                          </div>
-
-                          <div className="space-y-3.5 text-left text-xs text-slate-705 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6 leading-relaxed">
-                            <div>
-                              <span className="text-[9px] uppercase font-mono font-bold text-slate-400">KLANT</span>
-                              <p className="font-bold text-slate-900">{manualCreatedOrder.clientName}</p>
-                            </div>
-                            <div>
-                              <span className="text-[9px] uppercase font-mono font-bold text-slate-400">PRODUCTTYPE</span>
-                              <p className="font-bold text-slate-905">{manualCreatedOrder.selectedProductName || 'Op Maat Product'}</p>
-                            </div>
-                            <div>
-                              <span className="text-[9px] uppercase font-mono font-bold text-slate-400">FORMAT</span>
-                              <p className="font-mono font-bold text-slate-905">{manualCreatedOrder.customWidth}x{manualCreatedOrder.customHeight} mm</p>
-                            </div>
-                            <div className="pt-2 border-t border-slate-100">
-                              <span className="text-[9px] uppercase font-mono font-bold text-slate-400">LIVE TRACKING LINK (DEEL MET DE KLANT)</span>
-                              <div className="flex items-center gap-1.5 mt-1 col-span-2">
-                                <input
-                                  type="text"
-                                  readOnly
-                                  value={`${window.location.origin}/klantportal?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`}
-                                  className="w-full bg-slate-50 text-[11px] font-mono font-bold border rounded p-1.5 focus:outline-hidden"
-                                  onClick={(e) => (e.target as HTMLInputElement).select()}
-                                />
-                                <button
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(`${window.location.origin}/klantportal?token=${encodeURIComponent(manualCreatedOrder.trackingToken)}`);
-                                    alert("Gekopieerd naar klembord!");
-                                  }}
-                                  className="px-3 py-1.5 bg-slate-900 text-white font-extrabold text-[10px] rounded hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
-                                >
-                                  Kopieer
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex gap-3">
-                          <button
-                            onClick={() => {
-                              setManualCreatedOrder(null);
-                            }}
-                            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-4xs transition-all cursor-pointer"
-                          >
-                            Nog een handmatige opdracht aanmaken
-                          </button>
-                          <button
-                            onClick={() => {
-                              setAdminSubTab('orders');
-                              fetchAdminOrders();
-                            }}
-                            className="px-5 py-2.5 bg-slate-900 hover:bg-slate-805 text-white font-extrabold text-xs rounded-xl shadow-4xs transition-all cursor-pointer"
-                          >
-                            Bekijk in orders overzicht
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      /* CREATE FORM */
-                      <form
-                        onSubmit={async (e) => {
-                          e.preventDefault();
-                          
-                          const manualOrderPayload = {
-                            clientName: adminOrderClientName,
-                            clientEmail: adminOrderClientEmail,
-                            clientPhone: adminOrderClientPhone || '-',
-                            clientReference: adminOrderClientReference || '',
-                            clientQuantity: Number(adminOrderClientQuantity) || 100,
-                            selectedProductName: adminOrderSelectedProduct.name || 'Op Maat Product',
-                            selectedProductCategory: adminOrderSelectedProduct.category || 'Custom',
-                            customWidth: Number(adminOrderCustomWidth) || 210,
-                            customHeight: Number(adminOrderCustomHeight) || 297,
-                            printSides: adminOrderPrintSides,
-                            clientComments: adminOrderComments,
-                            status: 'Ingediend',
-                            assignedStaff: adminOrderAssignedStaff
-                          };
-
-                          try {
-                            const res = await fetch('/api/admin/orders', {
-                              method: 'POST',
-                              headers: {
-                                'Content-Type': 'application/json'
-                              },
-                              credentials: 'include',
-                              body: JSON.stringify({ orderData: manualOrderPayload })
-                            });
-
-                            if (res.ok) {
-                              const result = await res.json();
-                              setManualCreatedOrder({ id: result.orderId, trackingToken: result.trackingToken, ...manualOrderPayload });
-                              
-                              // Reset creation inputs
-                              setAdminOrderClientName("");
-                              setAdminOrderClientEmail("");
-                              setAdminOrderClientPhone("");
-                              setAdminOrderClientReference("");
-                              setAdminOrderClientQuantity(100);
-                              setAdminOrderComments("");
-                              setAdminOrderAssignedStaff("");
-                              
-                              fetchAdminOrders(); // Refresh orders pool in background
-                            } else {
-                              alert('Fout bij het handmatig opslaan van de opdracht.');
-                            }
-                          } catch (err) {
-                            console.error(err);
-                            alert('Fout bij verbinding met de preflight database.');
-                          }
-                        }}
-                        className="space-y-6 font-sans text-xs"
-                      >
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                          {/* Card 1: Klantgegevens */}
-                          <div className="bg-slate-50 p-5 rounded-2xl border border-slate-150 space-y-4">
-                            <h4 className="font-extrabold text-slate-850 text-sm border-none flex items-center gap-1.5">
-                              <User className="w-4 h-4 text-slate-500" /> 1. Klant &amp; Contactgegevens
-                            </h4>
-
-                            <div className="space-y-3">
-                              <div className="space-y-1 block text-left">
-                                <label className="text-[10px] uppercase font-bold text-slate-500">Klant- of Bedrijfsnaam</label>
-                                <input
-                                  type="text"
-                                  required
-                                  placeholder="Bijv. Janssen Marketing BV"
-                                  value={adminOrderClientName}
-                                  onChange={(e) => setAdminOrderClientName(e.target.value)}
-                                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-hidden text-slate-800 bg-white"
-                                />
-                              </div>
-
-                              <div className="space-y-1 block text-left">
-                                <label className="text-[10px] uppercase font-bold text-slate-500">E-mailadres Klant</label>
-                                <input
-                                  type="email"
-                                  required
-                                  placeholder="Bijv. info@janssen.nl"
-                                  value={adminOrderClientEmail}
-                                  onChange={(e) => setAdminOrderClientEmail(e.target.value)}
-                                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-hidden text-slate-800 bg-white"
-                                />
-                              </div>
-
-                              <div className="space-y-1 block text-left">
-                                <label className="text-[10px] uppercase font-bold text-slate-500">Telefoonnummer (Optioneel)</label>
-                                <input
-                                  type="text"
-                                  placeholder="Bijv. +31 6 12345678"
-                                  value={adminOrderClientPhone}
-                                  onChange={(e) => setAdminOrderClientPhone(e.target.value)}
-                                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-hidden text-slate-805 bg-white"
-                                />
-                              </div>
-
-                              <div className="space-y-1 block text-left">
-                                <label className="text-[10px] uppercase font-bold text-slate-500">Referentiekode (Optioneel)</label>
-                                <input
-                                  type="text"
-                                  placeholder="Bijv. REF-2026-A"
-                                  value={adminOrderClientReference}
-                                  onChange={(e) => setAdminOrderClientReference(e.target.value)}
-                                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-mono focus:outline-hidden text-slate-805 bg-white"
-                                />
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Card 2: Productdetails */}
-                          <div className="bg-slate-50 p-5 rounded-2xl border border-slate-150 space-y-4">
-                            <h4 className="font-extrabold text-slate-850 text-sm border-none flex items-center gap-1.5">
-                              <Briefcase className="w-4 h-4 text-slate-500" /> 2. Drukwerk Formaat &amp; Specificaties
-                            </h4>
-
-                            <div className="space-y-3">
-                              <div className="grid grid-cols-2 gap-3">
-                                <div className="space-y-1 block text-left">
-                                  <label className="text-[10px] uppercase font-bold text-slate-500">Preset Product</label>
-                                  <select
-                                    value={adminOrderSelectedProduct.name}
-                                    onChange={(e) => {
-                                      const prodName = e.target.value;
-                                      const match = STANDARD_PRODUCTS.find(p => p.name === prodName) || STANDARD_PRODUCTS[0];
-                                      setAdminOrderSelectedProduct(match);
-                                      setAdminOrderCustomWidth(match.widthMm);
-                                      setAdminOrderCustomHeight(match.heightMm);
-                                      if (match.category === 'Sticker') {
-                                        setAdminOrderPrintSides('single');
-                                      }
-                                    }}
-                                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-hidden text-slate-805 bg-white"
-                                  >
-                                    {STANDARD_PRODUCTS.map(p => (
-                                      <option key={p.name} value={p.name}>{p.name}</option>
-                                    ))}
-                                  </select>
-                                </div>
-
-                                <div className="space-y-1 block text-left">
-                                  <label className="text-[10px] uppercase font-bold text-slate-500">Product Naam</label>
-                                  <input
-                                    type="text"
-                                    required
-                                    value={adminOrderSelectedProduct.name}
-                                    readOnly
-                                    className="w-full bg-slate-100 border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-hidden text-slate-500 cursor-not-allowed"
-                                  />
-                                </div>
-                              </div>
-
-                              <div className="grid grid-cols-2 gap-3">
-                                <div className="space-y-1 block text-left">
-                                  <label className="text-[10px] uppercase font-bold text-slate-500">Breedte (mm)</label>
-                                  <input
-                                    type="number"
-                                    required
-                                    value={adminOrderCustomWidth}
-                                    onChange={(e) => setAdminOrderCustomWidth(Number(e.target.value))}
-                                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-mono font-bold focus:outline-hidden text-slate-805 bg-white"
-                                  />
-                                </div>
-
-                                <div className="space-y-1 block text-left">
-                                  <label className="text-[10px] uppercase font-bold text-slate-500">Hoogte (mm)</label>
-                                  <input
-                                    type="number"
-                                    required
-                                    value={adminOrderCustomHeight}
-                                    onChange={(e) => setAdminOrderCustomHeight(Number(e.target.value))}
-                                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-mono font-bold focus:outline-hidden text-slate-805 bg-white"
-                                  />
-                                </div>
-                              </div>
-
-                              <div className="grid grid-cols-2 gap-3">
-                                <div className="space-y-1 block text-left">
-                                  <label className="text-[10px] uppercase font-bold text-slate-500">Zijdigheid</label>
-                                  <select
-                                    disabled={adminOrderSelectedProduct.category === 'Sticker'}
-                                    value={adminOrderPrintSides}
-                                    onChange={(e) => setAdminOrderPrintSides(e.target.value as 'single' | 'double')}
-                                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-hidden text-slate-805 bg-white"
-                                  >
-                                    <option value="single">Enkelzijdig</option>
-                                    <option value="double">Dubbelzijdig</option>
-                                  </select>
-                                </div>
-
-                                <div className="space-y-1 block text-left">
-                                  <label className="text-[10px] uppercase font-bold text-slate-500">Aantal stuks (Oplage)</label>
-                                  <input
-                                    type="number"
-                                    required
-                                    value={adminOrderClientQuantity}
-                                    onChange={(e) => setAdminOrderClientQuantity(Number(e.target.value))}
-                                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-bold focus:outline-hidden text-slate-800 bg-white"
-                                  />
-                                </div>
-                              </div>
-
-                              <div className="space-y-1 block text-left">
-                                <label className="text-[10px] uppercase font-bold text-slate-500">Assigneer Operator direct (Optioneel)</label>
-                                <select
-                                  value={adminOrderAssignedStaff}
-                                  onChange={(e) => setAdminOrderAssignedStaff(e.target.value)}
-                                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-hidden text-slate-805 bg-white"
-                                >
-                                  <option value="">-- Geen operator toegewezen --</option>
-                                  {staffList.map((m) => (
-                                    <option key={m.id} value={m.name}>
-                                      {m.name} ({m.role})
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              <div className="space-y-1 block text-left">
-                                <label className="text-[10px] uppercase font-bold text-slate-500">Interne Opmerkingen</label>
-                                <textarea
-                                  value={adminOrderComments}
-                                  onChange={(e) => setAdminOrderComments(e.target.value)}
-                                  placeholder="Bijvoorbeeld: Sneldruk gewenst."
-                                  rows={2}
-                                  className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:outline-hidden text-slate-800 bg-white"
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="text-right">
-                          <button
-                            type="submit"
-                            className="px-6 py-3 bg-slate-900 border-none hover:bg-slate-800 text-white font-extrabold text-xs rounded-xl shadow-4xs transition-all cursor-pointer inline-flex items-center gap-1.5"
-                          >
-                            <PlusCircle className="w-4 h-4 text-emerald-400" /> Opdracht Aanmaken &amp; Activeer QR-code
-                          </button>
-                        </div>
-                      </form>
-                    )}
-                  </div>
-                </div>
+                /* OPDRACHTBON: alleen voor ingelogd personeel met het recht om bonnen te maken */
+                can('bon_maken') ? (
+                  <Suspense fallback={lazyFallback}>
+                    <OrderTicketWorkspace
+                      products={STANDARD_PRODUCTS}
+                      staff={staffList}
+                      onOrderCreated={() => fetchAdminOrders()}
+                      onViewOrders={() => setAdminSubTab('orders')}
+                    />
+                  </Suspense>
+                ) : (
+                  <p className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs font-semibold text-amber-900">U heeft geen rechten om opdrachtbonnen te maken. Vraag het de beheerder.</p>
+                )
             )}
               </div>
             )}

@@ -807,6 +807,10 @@ async function startServer() {
   app.post("/api/orders", rateLimit(10), asyncRoute(async (req, res) => {
     const orderData = req.body?.orderData;
     if (orderData?.order_type === "opdrachtbon") {
+      // Opdrachtbonnen maakt alleen ingelogd personeel (via /api/admin/orders).
+      return res.status(401).json({ error: "Log in via de backoffice om een opdrachtbon te maken." });
+    }
+    if (false as boolean) {
       if (
         typeof orderData.order_number !== "string" ||
         typeof orderData.products_json !== "string" ||
