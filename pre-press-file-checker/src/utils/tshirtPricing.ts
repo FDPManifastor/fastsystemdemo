@@ -44,6 +44,35 @@ export const TSHIRT_PRINT_PRICES: Record<TshirtFormat, [number, number, number]>
 /** Textiel opmaakkosten (SKU 10009): alleen als FD het ontwerp opmaakt. */
 export const TSHIRT_DESIGN_FEE = 15;
 export const TSHIRT_MAX_QUANTITY = 1000;
+/** Maximaal aantal opdrukken per bestelling (voor en achter samen). */
+export const TSHIRT_MAX_PRINTS = 8;
+/** Grootste opdruk: A3 (30 × 42 cm), kleinste zijde 2 cm. */
+export const TSHIRT_MAX_LONG_MM = 420;
+export const TSHIRT_MAX_SHORT_MM = 300;
+export const TSHIRT_MIN_MM = 20;
+
+/** Welk prijsformaat hoort bij deze opdrukmaat? null = groter dan A3. */
+export function formatForSize(widthMm: number, heightMm: number): TshirtFormat | null {
+  const long = Math.max(widthMm, heightMm);
+  const short = Math.min(widthMm, heightMm);
+  if (long <= 100.5 && short <= 100.5) return 'klein';
+  if (long <= 300.5 && short <= 210.5) return 'a4';
+  if (long <= TSHIRT_MAX_LONG_MM + 0.5 && short <= TSHIRT_MAX_SHORT_MM + 0.5) return 'a3';
+  return null;
+}
+
+/** Een geplaatste opdruk op het shirt. Positie = midden van de opdruk in mm: x vanaf het midden, y vanaf de kraag. */
+export interface TshirtDesign {
+  id: string;
+  side: TshirtSide;
+  xMm: number;
+  yMm: number;
+  widthMm: number;
+  heightMm: number;
+  fileName: string;
+  pixelWidth: number;
+  pixelHeight: number;
+}
 
 export interface TshirtPrint {
   side: TshirtSide;
@@ -90,7 +119,12 @@ export function sizesSummary(sizes: TshirtSpec['sizes']) {
 }
 
 export function printsSummary(prints: TshirtPrint[]) {
-  return prints.map((print) => `${print.side === 'voor' ? 'voor' : 'achter'} ${TSHIRT_FORMATS[print.format].short}`).join(' + ');
+  const counts = new Map<string, number>();
+  for (const print of prints) {
+    const key = `${print.side} ${TSHIRT_FORMATS[print.format].short}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts.entries()].map(([key, count]) => (count > 1 ? `${count}× ${key}` : key)).join(' + ');
 }
 
 export function calculateTshirtPrice(spec: TshirtSpec): TshirtPriceResult {
@@ -99,7 +133,8 @@ export function calculateTshirtPrice(spec: TshirtSpec): TshirtPriceResult {
   if (!TSHIRT_COLORS[spec.color]) return { ...empty, warning: 'Kies een kleur.' };
   if (quantity <= 0) return { ...empty, warning: 'Vul bij minstens één maat een aantal in.' };
   if (quantity > TSHIRT_MAX_QUANTITY) return { ...empty, warning: `Maximaal ${TSHIRT_MAX_QUANTITY} shirts per bestelling; vraag een offerte aan.` };
-  if (spec.prints.length === 0) return { ...empty, warning: 'Kies minstens één bedrukking (voor of achter).' };
+  if (spec.prints.length === 0) return { ...empty, warning: 'Voeg minstens één opdruk toe.' };
+  if (spec.prints.length > TSHIRT_MAX_PRINTS) return { ...empty, warning: `Maximaal ${TSHIRT_MAX_PRINTS} opdrukken per bestelling.` };
 
   const tierIndex = tshirtTierIndex(quantity);
   const tier = TSHIRT_TIERS[tierIndex];
@@ -114,7 +149,7 @@ export function calculateTshirtPrice(spec: TshirtSpec): TshirtPriceResult {
   if (!spec.ownShirts) lines.push({ label: `T-shirt ${color.name.toLowerCase()} ${quantity} × ${euro(shirtPrice)}`, amount: round2(shirtPrice * quantity) });
   spec.prints.forEach((print, index) => {
     lines.push({
-      label: `Print ${print.side === 'voor' ? 'voorkant' : 'achterkant'} ${TSHIRT_FORMATS[print.format].short} ${quantity} × ${euro(printPrices[index])} (${tier.label})`,
+      label: `Opdruk ${index + 1} ${print.side === 'voor' ? 'voorkant' : 'achterkant'} ${TSHIRT_FORMATS[print.format].short} ${quantity} × ${euro(printPrices[index])} (${tier.label})`,
       amount: round2(printPrices[index] * quantity),
     });
   });
@@ -140,14 +175,48 @@ export function parseTshirtSpec(value: unknown): TshirtSpec | null {
     sizes[size] = count;
   }
   if (Object.keys(raw.sizes).some((key) => !(TSHIRT_SIZES as readonly string[]).includes(key))) return null;
-  if (!Array.isArray(raw.prints) || raw.prints.length < 1 || raw.prints.length > 2) return null;
+  if (!Array.isArray(raw.prints) || raw.prints.length < 1 || raw.prints.length > TSHIRT_MAX_PRINTS) return null;
   const prints: TshirtPrint[] = [];
   for (const print of raw.prints) {
-    if (!print || (print.side !== 'voor' && print.side !== 'achter') || !(print.format in TSHIRT_FORMATS)) return null;
-    if (prints.some((existing) => existing.side === print.side)) return null;
+    if (!print || (print.side !== 'voor' && print.side !== 'achter') || !Object.prototype.hasOwnProperty.call(TSHIRT_FORMATS, print.format)) return null;
     prints.push({ side: print.side, format: print.format });
   }
   const quantity = tshirtQuantity(sizes);
   if (quantity < 1 || quantity > TSHIRT_MAX_QUANTITY) return null;
   return { color: raw.color, sizes, prints, ownShirts: raw.ownShirts === true, designFee: raw.designFee === true };
+}
+
+/** Controleert geplaatste opdrukken van buiten (server). Geeft null bij ongeldige invoer. */
+export function parseTshirtDesigns(value: unknown): TshirtDesign[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > TSHIRT_MAX_PRINTS) return null;
+  const designs: TshirtDesign[] = [];
+  const finite = (input: unknown, min: number, max: number) => typeof input === 'number' && Number.isFinite(input) && input >= min && input <= max;
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') return null;
+    if (typeof raw.id !== 'string' || !/^[a-z0-9]{4,24}$/.test(raw.id) || designs.some((design) => design.id === raw.id)) return null;
+    if (raw.side !== 'voor' && raw.side !== 'achter') return null;
+    if (!finite(raw.widthMm, 5, TSHIRT_MAX_LONG_MM + 1) || !finite(raw.heightMm, 5, TSHIRT_MAX_LONG_MM + 1)) return null;
+    if (!formatForSize(raw.widthMm, raw.heightMm)) return null;
+    if (!finite(raw.xMm, -600, 600) || !finite(raw.yMm, -100, 900)) return null;
+    if (!finite(raw.pixelWidth, 1, 100000) || !finite(raw.pixelHeight, 1, 100000)) return null;
+    designs.push({
+      id: raw.id,
+      side: raw.side,
+      xMm: Math.round(raw.xMm * 10) / 10,
+      yMm: Math.round(raw.yMm * 10) / 10,
+      widthMm: Math.round(raw.widthMm * 10) / 10,
+      heightMm: Math.round(raw.heightMm * 10) / 10,
+      fileName: typeof raw.fileName === 'string' ? raw.fileName.slice(0, 200) : '',
+      pixelWidth: Math.round(raw.pixelWidth),
+      pixelHeight: Math.round(raw.pixelHeight),
+    });
+  }
+  return designs;
+}
+
+/** Prijsregels volgen uit de opdrukken: voorkant eerst, daarna achterkant. */
+export function printsFromDesigns(designs: Pick<TshirtDesign, 'side' | 'widthMm' | 'heightMm'>[]): TshirtPrint[] {
+  return [...designs]
+    .sort((a, b) => (a.side === b.side ? 0 : a.side === 'voor' ? -1 : 1))
+    .map((design) => ({ side: design.side, format: formatForSize(design.widthMm, design.heightMm) ?? 'a3' }));
 }

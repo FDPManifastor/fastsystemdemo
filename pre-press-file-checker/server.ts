@@ -6,7 +6,7 @@ import { createServer as createViteServer } from "vite";
 import { createStorage, type NewFile, type Order } from "./storage";
 import { createCatalog } from "./catalog";
 import { createProjectMap } from "./projectMap";
-import { calculateTshirtPrice, parseTshirtSpec } from "./src/utils/tshirtPricing";
+import { calculateTshirtPrice, parseTshirtDesigns, parseTshirtSpec, printsFromDesigns } from "./src/utils/tshirtPricing";
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -270,6 +270,9 @@ async function startServer() {
   app.use("/api/public/orders", express.json({ limit: "64mb" }));
   app.use("/api/public/ticket-drafts", express.json({ limit: "32mb" }));
   app.use("/api/orders/:id/attachments", express.json({ limit: "32mb" }));
+  // Online T-shirtbestelling: meerdere opdrukken (max 40 MB samen) in één verzoek.
+  const tshirtOrderJson = express.json({ limit: "64mb" });
+  app.use((req, res, next) => (req.method === "POST" && req.path === "/api/orders" ? tshirtOrderJson(req, res, next) : next()));
   app.use(express.json({ limit: "20mb" }));
   app.use(express.urlencoded({ limit: "32kb", extended: true }));
   app.use("/api", rateLimit(RATE_LIMIT_MAX_REQUESTS));
@@ -328,7 +331,7 @@ async function startServer() {
       return result;
     }
 
-    result.hasDesignFile = Boolean(order.imageSrcUrl);
+    result.hasDesignFile = Boolean(order.imageSrcUrl) || Object.keys(order.tshirt_files || {}).length > 0;
     if (order.order_type === "opdrachtbon") {
       let products: any[] = [];
       try {
@@ -532,35 +535,65 @@ async function startServer() {
     } catch {
       return null;
     }
-    const spec = parseTshirtSpec(raw?.spec);
+    const designs = parseTshirtDesigns(raw?.designs);
+    if (!designs) return null;
+    const spec = parseTshirtSpec({ ...(raw?.spec || {}), prints: printsFromDesigns(designs) });
     if (!spec) return null;
     const price = calculateTshirtPrice(spec);
     if (!price.valid) return null;
-    // Elke bedrukte kant moet een afbeelding hebben (A-zijde, en bij twee kanten ook de B-zijde).
-    if (!safeData.imageSrcUrl || (spec.prints.length === 2 && !safeData.backImageSrcUrl)) return null;
-    const sides: Record<string, unknown> = {};
-    for (const print of spec.prints) {
-      const side = raw?.sides?.[print.side];
-      if (!side || typeof side !== "object") return null;
-      const number = (input: unknown, max: number) => (typeof input === "number" && Number.isFinite(input) && input >= 0 && input <= max ? input : 0);
-      sides[print.side] = {
-        format: print.format,
-        fileName: typeof side.fileName === "string" ? side.fileName.slice(0, 200) : "",
-        pixelWidth: number(side.pixelWidth, 100000),
-        pixelHeight: number(side.pixelHeight, 100000),
-        printedWidthMm: number(side.printedWidthMm, 1000),
-        printedHeightMm: number(side.printedHeightMm, 1000),
-        dpi: number(side.dpi, 100000),
-        scale: number(side.scale, 1),
-        offsetX: number(side.offsetX, 1),
-        offsetY: number(side.offsetY, 1),
-        check: ["ok", "warning", "error"].includes(side.check) ? side.check : "warning",
-        checkNotes: Array.isArray(side.checkNotes) ? side.checkNotes.filter((note: unknown) => typeof note === "string").slice(0, 5).map((note: string) => note.slice(0, 300)) : [],
+    const notes = new Map<string, any>((Array.isArray(raw.designs) ? raw.designs : []).map((design: any) => [design?.id, design]));
+    const enriched = designs.map((design) => {
+      const extra = notes.get(design.id) || {};
+      return {
+        ...design,
+        dpi: typeof extra.dpi === "number" && Number.isFinite(extra.dpi) ? Math.max(0, Math.min(100000, Math.round(extra.dpi))) : 0,
+        check: ["ok", "warning", "error"].includes(extra.check) ? extra.check : "warning",
+        checkNotes: Array.isArray(extra.checkNotes) ? extra.checkNotes.filter((note: unknown) => typeof note === "string").slice(0, 5).map((note: string) => note.slice(0, 300)) : [],
       };
-    }
+    });
     safeData.clientQuantity = price.quantity;
     safeData.selectedProductCategory = "T-shirt";
-    return JSON.stringify({ spec, sides, total: price.total, perShirt: price.perShirt, description: price.description, source: price.source, lines: price.lines });
+    return JSON.stringify({ version: 2, spec, designs: enriched, total: price.total, perShirt: price.perShirt, description: price.description, source: price.source, lines: price.lines });
+  }
+
+  /** Bestanden van een online T-shirtbestelling: één afbeelding per opdruk plus proefbeelden per kant. */
+  function prepareTshirtFiles(orderData: any, filesValue: unknown, proofsValue: unknown) {
+    let designs: any[] = [];
+    try {
+      designs = JSON.parse(String(orderData?.tshirt_json)).designs;
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(designs) || !Array.isArray(filesValue) || filesValue.length !== designs.length) return null;
+    const now = new Date().toISOString();
+    const addFiles: NewFile[] = [];
+    const extraFiles: any[] = [];
+    const designFiles: Record<string, string> = {};
+    let total = 0;
+    for (const [index, design] of designs.entries()) {
+      const entry = (filesValue as any[]).find((item) => item && item.designId === design?.id);
+      const file = validateCustomerFile(entry);
+      if (!file || file.fileType === "application/pdf") return null;
+      total += file.size;
+      const id = crypto.randomBytes(12).toString("hex");
+      const side = design.side === "achter" ? "achterkant" : "voorkant";
+      addFiles.push({ id, fileName: file.fileName, fileType: file.fileType, dataUrl: file.dataUrl });
+      extraFiles.push({ id, fileName: file.fileName, fileType: file.fileType, size: file.size, label: `T-shirt opdruk ${index + 1} – ${side}`, by: "Klant", uploadedAt: now });
+      designFiles[String(design.id)] = id;
+    }
+    const proofFiles: Record<string, string> = {};
+    for (const proof of Array.isArray(proofsValue) ? proofsValue.slice(0, 2) : []) {
+      const side = proof?.side === "achter" ? "achter" : proof?.side === "voor" ? "voor" : "";
+      const file = validateCustomerFile(proof);
+      if (!side || !file || file.fileType !== "image/png" || proofFiles[side]) continue;
+      total += file.size;
+      const id = crypto.randomBytes(12).toString("hex");
+      addFiles.push({ id, fileName: file.fileName, fileType: file.fileType, dataUrl: file.dataUrl });
+      extraFiles.push({ id, fileName: file.fileName, fileType: file.fileType, size: file.size, label: `Proefbeeld ${side === "voor" ? "voorkant" : "achterkant"}`, by: "Klant", uploadedAt: now });
+      proofFiles[side] = id;
+    }
+    if (total > 45 * 1024 * 1024) return null;
+    return { addFiles, fields: { extraFiles, tshirt_files: designFiles, tshirt_proofs: proofFiles } };
   }
 
   function findProductUpload(order: Order, uploadToken: string) {
@@ -572,7 +605,7 @@ async function startServer() {
     }
   }
 
-  async function createOrder(data: any, assignedStaff?: string, allowTicketFields = false, branch?: unknown) {
+  async function createOrder(data: any, assignedStaff?: string, allowTicketFields = false, branch?: unknown, extras?: { addFiles: NewFile[]; fields: Record<string, unknown> }) {
     const safeData = sanitizeOrderData(data, allowTicketFields);
     if (!safeData) return null;
 
@@ -612,7 +645,8 @@ async function startServer() {
       }]
     };
 
-    await storage.insertOrder(order);
+    if (extras) Object.assign(order, extras.fields);
+    await storage.insertOrder(order, extras ? { addFiles: extras.addFiles } : undefined);
     return { order, productUploadLinks };
   }
 
@@ -1069,8 +1103,16 @@ async function startServer() {
       });
     }
 
-    const created = await createOrder(orderData, undefined, false, isBranch(orderData?.branch) ? orderData.branch : DEFAULT_BRANCH);
-    if (!created) return res.status(400).json({ error: "Invalid order data." });
+    let tshirtExtras: ReturnType<typeof prepareTshirtFiles> | undefined;
+    if (orderData?.tshirt_json !== undefined) {
+      tshirtExtras = prepareTshirtFiles(orderData, req.body?.tshirtFiles, req.body?.tshirtProofs);
+      if (!tshirtExtras) return res.status(400).json({ error: "De T-shirtbestanden zijn ongeldig of te groot (max 20 MB per afbeelding, 40 MB samen)." });
+      // Afbeeldingen staan als bestanden bij de opdracht, niet in de opdrachtgegevens.
+      delete orderData.imageSrcUrl;
+      delete orderData.backImageSrcUrl;
+    }
+    const created = await createOrder(orderData, undefined, false, isBranch(orderData?.branch) ? orderData.branch : DEFAULT_BRANCH, tshirtExtras || undefined);
+    if (!created) return res.status(400).json({ error: orderData?.tshirt_json !== undefined ? "De T-shirtbestelling kon niet worden gecontroleerd. Controleer de opdrukken en maten." : "Invalid order data." });
     return res.status(201).json({ success: true, orderId: created.order.id, trackingToken: created.order.trackingToken });
   }));
 

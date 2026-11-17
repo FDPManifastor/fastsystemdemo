@@ -1,28 +1,36 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Loader2, Minus, Plus, Shirt, UploadCloud, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Crosshair, Loader2, Minus, Plus, Shirt, Trash2, UploadCloud } from 'lucide-react';
 import { FDLogo } from '../FDLogo';
 import { BRANCH_DETAILS } from '../../utils/branches';
 import {
   TSHIRT_COLORS,
   TSHIRT_DESIGN_FEE,
   TSHIRT_FORMATS,
+  TSHIRT_MAX_PRINTS,
   TSHIRT_PRINT_PRICES,
   TSHIRT_SIZES,
   TSHIRT_TIERS,
   TshirtColor,
-  TshirtFormat,
   TshirtSide,
   TshirtSize,
   TshirtSpec,
   calculateTshirtPrice,
+  formatForSize,
+  printsFromDesigns,
 } from '../../utils/tshirtPricing';
-import { CheckItem, TshirtImage, checkTshirtImage, effectiveDpi, loadTshirtImage, worstLevel } from '../../utils/tshirtPrepress';
-import { DEFAULT_PLACEMENT, DesignPlacement, TshirtMockup, printedSizeMm } from './TshirtMockup';
+import { CheckItem, TSHIRT_MAX_TOTAL_BYTES, TshirtImage, checkTshirtImage, effectiveDpi, loadTshirtImage, worstLevel } from '../../utils/tshirtPrepress';
+import { PlacedDesign, TshirtCanvas, clampPosition, clampScale } from './TshirtMockup';
+
+interface Design extends PlacedDesign {
+  image: TshirtImage;
+}
 
 const SIDES: TshirtSide[] = ['voor', 'achter'];
 const sideLabel = (side: TshirtSide) => (side === 'voor' ? 'Voorkant' : 'Achterkant');
 const money = (value: number) => `€ ${value.toFixed(2).replace('.', ',')}`;
+const cm = (mm: number) => (mm / 10).toLocaleString('nl-NL', { maximumFractionDigits: 1 });
 const inputClass = 'w-full min-h-[44px] rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-[#e31c24] focus:outline-none focus:ring-1 focus:ring-[#e31c24]';
+const newId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
 function CheckList({ items }: { items: CheckItem[] }) {
   return (
@@ -37,19 +45,48 @@ function CheckList({ items }: { items: CheckItem[] }) {
   );
 }
 
+/** Zet een (niet-bewerkbaar) shirt-SVG om naar een PNG als proefbeeld. */
+async function svgToPng(svg: SVGSVGElement | null, width = 900): Promise<string | null> {
+  if (!svg) return null;
+  try {
+    const clone = svg.cloneNode(true) as SVGSVGElement;
+    clone.setAttribute('width', String(width));
+    clone.setAttribute('height', String(Math.round(width * 340 / 400)));
+    const markup = new XMLSerializer().serializeToString(clone);
+    const url = URL.createObjectURL(new Blob([markup], { type: 'image/svg+xml' }));
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('proef'));
+      image.src = url;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = Math.round(width * 340 / 400);
+    const context = canvas.getContext('2d');
+    if (!context) return null;
+    context.fillStyle = '#f1f5f9';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    return canvas.toDataURL('image/png');
+  } catch {
+    return null;
+  }
+}
+
 export default function TshirtDesigner({ onBack }: { onBack: () => void }) {
   const [color, setColor] = useState<TshirtColor>('wit');
   const [activeSide, setActiveSide] = useState<TshirtSide>('voor');
-  const [enabled, setEnabled] = useState<Record<TshirtSide, boolean>>({ voor: true, achter: false });
-  const [formats, setFormats] = useState<Record<TshirtSide, TshirtFormat>>({ voor: 'a4', achter: 'a4' });
-  const [images, setImages] = useState<Partial<Record<TshirtSide, TshirtImage>>>({});
-  const [placements, setPlacements] = useState<Record<TshirtSide, DesignPlacement>>({ voor: DEFAULT_PLACEMENT, achter: DEFAULT_PLACEMENT });
+  const [designs, setDesigns] = useState<Design[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sizes, setSizes] = useState<Partial<Record<TshirtSize, number>>>({ M: 1 });
   const [designFee, setDesignFee] = useState(false);
-  const [loadingSide, setLoadingSide] = useState<TshirtSide | null>(null);
+  const [loading, setLoading] = useState(false);
   const [fileError, setFileError] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const proofRefs = useRef<Record<TshirtSide, SVGSVGElement | null>>({ voor: null, achter: null });
 
   const [step, setStep] = useState<'design' | 'details' | 'done'>('design');
   const [customer, setCustomer] = useState({ name: '', email: '', phone: '', branch: '', comments: '' });
@@ -58,50 +95,78 @@ export default function TshirtDesigner({ onBack }: { onBack: () => void }) {
   const [submitError, setSubmitError] = useState('');
   const [result, setResult] = useState<{ orderId: string; trackingToken: string } | null>(null);
 
-  const prints = SIDES.filter((side) => enabled[side]).map((side) => ({ side, format: formats[side] }));
+  const sideDesigns = designs.filter((design) => design.side === activeSide);
+  const selected = designs.find((design) => design.id === selectedId) ?? null;
+  const prints = printsFromDesigns(designs);
   const spec: TshirtSpec = { color, sizes, prints, designFee };
   const price = calculateTshirtPrice(spec);
   const quantity = price.quantity;
-
-  const sideInfo = (side: TshirtSide) => {
-    const image = images[side];
-    if (!image) return null;
-    const printed = printedSizeMm(image.pixelWidth, image.pixelHeight, formats[side], placements[side].scale);
-    const checks = checkTshirtImage(image, printed, color);
-    return { image, printed, checks, dpi: effectiveDpi(image, printed.widthMm) };
+  const tierPrice = (design: Design) => {
+    const format = formatForSize(design.widthMm, design.heightMm) ?? 'a3';
+    return { format, price: TSHIRT_PRINT_PRICES[format][price.tierIndex] };
   };
-  const active = sideInfo(activeSide);
+  const checksFor = (design: Design) => checkTshirtImage(design.image, { widthMm: design.widthMm, heightMm: design.heightMm }, color);
 
   const nextTier = useMemo(() => {
     if (!price.valid) return null;
     const next = TSHIRT_TIERS[price.tierIndex + 1];
     if (!next) return null;
-    const perShirt = (color === 'wit' ? TSHIRT_COLORS.wit.price : TSHIRT_COLORS.zwart.price)
-      + prints.reduce((sum, print) => sum + TSHIRT_PRINT_PRICES[print.format][price.tierIndex + 1], 0);
+    const perShirt = TSHIRT_COLORS[color].price + prints.reduce((sum, print) => sum + TSHIRT_PRINT_PRICES[print.format][price.tierIndex + 1], 0);
     return { count: next.min, perShirt };
   }, [price.valid, price.tierIndex, color, prints]);
 
-  const chooseFile = async (file: File | null | undefined) => {
+  const updateDesign = (changed: PlacedDesign) => {
+    setDesigns((current) => current.map((design) => (design.id === changed.id ? { ...design, ...changed } : design)));
+  };
+
+  const addFile = async (file: File | null | undefined) => {
     if (!file) return;
     setFileError('');
-    setLoadingSide(activeSide);
+    if (designs.length >= TSHIRT_MAX_PRINTS) {
+      setFileError(`Maximaal ${TSHIRT_MAX_PRINTS} opdrukken per bestelling.`);
+      return;
+    }
+    setLoading(true);
     try {
-      const loaded = await loadTshirtImage(file);
-      setImages((current) => ({ ...current, [activeSide]: loaded }));
-      setPlacements((current) => ({ ...current, [activeSide]: DEFAULT_PLACEMENT }));
-      setEnabled((current) => ({ ...current, [activeSide]: true }));
+      const image = await loadTshirtImage(file);
+      const totalBytes = designs.reduce((sum, design) => sum + design.image.bytes, 0) + image.bytes;
+      if (totalBytes > TSHIRT_MAX_TOTAL_BYTES) throw new Error('Samen zijn de bestanden te groot (max 40 MB). Maak een bestand kleiner of lever het aan in de winkel.');
+      const first = sideDesigns.length === 0;
+      // Eerste opdruk groot in het midden; extra opdrukken klein op de borst of in de nek.
+      const box = first ? { width: 250, height: 300 } : { width: 90, height: 90 };
+      const ratio = image.pixelWidth / image.pixelHeight;
+      let widthMm = ratio > box.width / box.height ? box.width : box.height * ratio;
+      let heightMm = widthMm / ratio;
+      const factor = clampScale(widthMm, heightMm, 1);
+      widthMm *= factor;
+      heightMm *= factor;
+      const position = first
+        ? { xMm: 0, yMm: (activeSide === 'voor' ? 90 : 70) + heightMm / 2 }
+        : activeSide === 'voor' ? { xMm: 120, yMm: 110 + heightMm / 2 } : { xMm: 0, yMm: 40 + heightMm / 2 };
+      const design: Design = clampPosition({
+        id: newId(),
+        side: activeSide,
+        ...position,
+        widthMm,
+        heightMm,
+        fileName: image.fileName,
+        pixelWidth: image.pixelWidth,
+        pixelHeight: image.pixelHeight,
+        url: image.dataUrl,
+        image,
+      });
+      setDesigns((current) => [...current, design]);
+      setSelectedId(design.id);
     } catch (error) {
       setFileError(error instanceof Error ? error.message : 'Het bestand kon niet worden geladen.');
     } finally {
-      setLoadingSide(null);
+      setLoading(false);
     }
   };
 
-  const toggleSide = (side: TshirtSide) => {
-    const next = { ...enabled, [side]: !enabled[side] };
-    if (!next.voor && !next.achter) return; // minstens één kant
-    setEnabled(next);
-    setActiveSide(next[side] ? side : (side === 'voor' ? 'achter' : 'voor'));
+  const removeDesign = (id: string) => {
+    setDesigns((current) => current.filter((design) => design.id !== id));
+    if (selectedId === id) setSelectedId(null);
   };
 
   const setSize = (size: TshirtSize, value: number) => {
@@ -109,8 +174,12 @@ export default function TshirtDesigner({ onBack }: { onBack: () => void }) {
     setSizes((current) => ({ ...current, [size]: count }));
   };
 
-  const missingImages = prints.filter((print) => !images[print.side]).map((print) => sideLabel(print.side).toLowerCase());
-  const canContinue = price.valid && missingImages.length === 0;
+  const switchSide = (side: TshirtSide) => {
+    setActiveSide(side);
+    setSelectedId(null);
+  };
+
+  const canContinue = price.valid && designs.length > 0;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -120,64 +189,54 @@ export default function TshirtDesigner({ onBack }: { onBack: () => void }) {
     if (!rightsConfirmed) return setSubmitError('Bevestig dat u de afbeelding mag gebruiken.');
     if (!canContinue) return setSubmitError('Uw ontwerp is nog niet compleet.');
 
-    const sideData = Object.fromEntries(prints.map((print) => {
-      const info = sideInfo(print.side)!;
-      return [print.side, {
-        format: print.format,
-        fileName: info.image.fileName,
-        pixelWidth: info.image.pixelWidth,
-        pixelHeight: info.image.pixelHeight,
-        printedWidthMm: Math.round(info.printed.widthMm),
-        printedHeightMm: Math.round(info.printed.heightMm),
-        dpi: info.dpi,
-        check: worstLevel(info.checks),
-        checkNotes: info.checks.filter((item) => item.level !== 'ok').map((item) => item.text),
-        ...placements[print.side],
-      }];
-    }));
-    // A-zijde = eerste bedrukte kant, B-zijde = achterkant als beide kanten bedrukt worden.
-    const first = prints[0];
-    const second = prints[1];
-    const firstInfo = sideInfo(first.side)!;
-    const secondInfo = second ? sideInfo(second.side)! : null;
-
-    const orderData = {
-      branch: customer.branch,
-      clientName: customer.name.trim(),
-      clientEmail: customer.email.trim(),
-      clientPhone: customer.phone.trim(),
-      clientReference: '',
-      clientComments: customer.comments.trim().slice(0, 2000),
-      clientQuantity: quantity,
-      selectedProductId: 'tshirt-dtf',
-      selectedProductName: `T-shirt ${TSHIRT_COLORS[color].name.toLowerCase()} DTF`,
-      selectedProductCategory: 'T-shirt',
-      customWidth: Math.max(1, Math.round(firstInfo.printed.widthMm)),
-      customHeight: Math.max(1, Math.round(firstInfo.printed.heightMm)),
-      printSides: second ? 'double' : 'single',
-      imageSrcUrl: firstInfo.image.dataUrl,
-      backImageSrcUrl: secondInfo ? secondInfo.image.dataUrl : undefined,
-      frontRotationDegrees: 0,
-      backRotationDegrees: 0,
-      frontFitMode: 'fit',
-      backFitMode: 'fit',
-      frontFileName: `${sideLabel(first.side)} – ${firstInfo.image.fileName}`.slice(0, 200),
-      backFileName: secondInfo ? `${sideLabel(second.side)} – ${secondInfo.image.fileName}`.slice(0, 200) : undefined,
-      frontPixelWidth: firstInfo.image.pixelWidth,
-      frontPixelHeight: firstInfo.image.pixelHeight,
-      backPixelWidth: secondInfo?.image.pixelWidth,
-      backPixelHeight: secondInfo?.image.pixelHeight,
-      frontComputedDpi: firstInfo.dpi,
-      backComputedDpi: secondInfo?.dpi,
-      tshirt_json: JSON.stringify({ spec, sides: sideData }),
-    };
-
     setSubmitting(true);
     try {
+      const proofs: Array<{ side: TshirtSide; fileName: string; fileType: string; dataUrl: string }> = [];
+      for (const side of SIDES) {
+        if (!designs.some((design) => design.side === side)) continue;
+        const dataUrl = await svgToPng(proofRefs.current[side]);
+        if (dataUrl) proofs.push({ side, fileName: `Proef ${sideLabel(side).toLowerCase()}.png`, fileType: 'image/png', dataUrl });
+      }
+      const first = designs[0];
+      const designData = designs.map((design) => {
+        const checks = checksFor(design);
+        return {
+          id: design.id,
+          side: design.side,
+          xMm: design.xMm,
+          yMm: design.yMm,
+          widthMm: design.widthMm,
+          heightMm: design.heightMm,
+          fileName: design.image.fileName,
+          pixelWidth: design.pixelWidth,
+          pixelHeight: design.pixelHeight,
+          dpi: effectiveDpi(design.image, design.widthMm),
+          check: worstLevel(checks),
+          checkNotes: checks.filter((item) => item.level !== 'ok').map((item) => item.text),
+        };
+      });
+      const orderData = {
+        branch: customer.branch,
+        clientName: customer.name.trim(),
+        clientEmail: customer.email.trim(),
+        clientPhone: customer.phone.trim(),
+        clientReference: '',
+        clientComments: customer.comments.trim().slice(0, 2000),
+        clientQuantity: quantity,
+        selectedProductId: 'tshirt-dtf',
+        selectedProductName: `T-shirt ${TSHIRT_COLORS[color].name.toLowerCase()} DTF`,
+        selectedProductCategory: 'T-shirt',
+        customWidth: Math.max(1, Math.round(first.widthMm)),
+        customHeight: Math.max(1, Math.round(first.heightMm)),
+        printSides: designs.some((design) => design.side === 'achter') && designs.some((design) => design.side === 'voor') ? 'double' : 'single',
+        tshirt_json: JSON.stringify({ spec: { color, sizes, designFee }, designs: designData }),
+      };
+      const tshirtFiles = designs.map((design) => ({ designId: design.id, fileName: design.image.fileName, fileType: design.image.fileType, dataUrl: design.image.dataUrl }));
+
       const response = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderData }),
+        body: JSON.stringify({ orderData, tshirtFiles, tshirtProofs: proofs }),
       });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || 'De bestelling kon niet worden verstuurd.');
@@ -190,7 +249,7 @@ export default function TshirtDesigner({ onBack }: { onBack: () => void }) {
     }
   };
 
-  const chip = (selected: boolean) => `min-h-[44px] rounded-xl border-2 px-3 text-sm font-bold transition-colors ${selected ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400'}`;
+  const selectedChecks = selected ? checksFor(selected) : [];
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-900">
@@ -204,6 +263,13 @@ export default function TshirtDesigner({ onBack }: { onBack: () => void }) {
         </div>
       </header>
 
+      {/* Proefbeelden (onzichtbaar), worden bij het bestellen als PNG meegestuurd. */}
+      <div aria-hidden="true" style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }}>
+        {SIDES.map((side) => (
+          <TshirtCanvas key={side} ref={(node) => { proofRefs.current[side] = node; }} color={color} side={side} designs={designs.filter((design) => design.side === side)} />
+        ))}
+      </div>
+
       {step === 'done' && result ? (
         <main className="mx-auto max-w-xl px-4 py-16 text-center">
           <CheckCircle2 className="mx-auto h-14 w-14 text-emerald-500" />
@@ -215,35 +281,18 @@ export default function TshirtDesigner({ onBack }: { onBack: () => void }) {
         <main className="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[1fr_28rem]">
           {/* Shirt */}
           <section className="flex flex-col items-center rounded-3xl bg-gradient-to-b from-slate-50 to-slate-200/60 p-4 sm:p-8">
-            <TshirtMockup
+            <TshirtCanvas
               color={color}
               side={activeSide}
-              format={enabled[activeSide] ? formats[activeSide] : null}
-              imageUrl={images[activeSide]?.dataUrl}
-              imageWidth={images[activeSide]?.pixelWidth}
-              imageHeight={images[activeSide]?.pixelHeight}
-              placement={placements[activeSide]}
-              onPlacementChange={(placement) => setPlacements((current) => ({ ...current, [activeSide]: placement }))}
-              className="w-full max-w-[34rem] drop-shadow-xl"
+              designs={sideDesigns}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onChange={updateDesign}
+              emptyHint
+              className="w-full max-w-[36rem] drop-shadow-xl"
             />
-            {active && enabled[activeSide] && (
-              <div className="mt-3 w-full max-w-md space-y-1">
-                <label className="flex items-center gap-3 text-xs font-bold text-slate-600">
-                  Grootte
-                  <input type="range" min="0.2" max="1" step="0.01" value={placements[activeSide].scale} onChange={(event) => setPlacements((current) => ({ ...current, [activeSide]: { ...current[activeSide], scale: Number(event.target.value) } }))} className="flex-1 accent-[#e31c24]" aria-label="Grootte van het ontwerp" />
-                  <span className="w-24 text-right tabular-nums">{Math.round(active.printed.widthMm / 10)} × {Math.round(active.printed.heightMm / 10)} cm</span>
-                </label>
-                <p className="text-center text-[11px] text-slate-500">Sleep het ontwerp om het te verplaatsen binnen het vak.</p>
-              </div>
-            )}
-            <div className="mt-4 inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm" role="tablist" aria-label="Kant van het shirt">
-              {SIDES.map((side) => (
-                <button key={side} type="button" role="tab" aria-selected={activeSide === side} onClick={() => setActiveSide(side)} className={`inline-flex min-h-[48px] items-center gap-2 rounded-xl px-5 text-sm font-bold ${activeSide === side ? 'bg-sky-50 text-sky-900 ring-2 ring-sky-700' : 'text-slate-600 hover:bg-slate-50'}`}>
-                  <Shirt className="h-4 w-4" /> {sideLabel(side)}
-                  {images[side] && enabled[side] && <span className="h-2 w-2 rounded-full bg-emerald-500" aria-label="ontwerp toegevoegd" />}
-                </button>
-              ))}
-            </div>
+            <p className="mt-3 rounded-full bg-white px-4 py-1.5 text-sm font-extrabold text-slate-800 shadow-sm">{sideLabel(activeSide)}</p>
+            <p className="mt-2 text-center text-[11px] text-slate-500">Sleep een opdruk om hem te verplaatsen. Trek aan een hoek of zijkant om hem groter of kleiner te maken.</p>
           </section>
 
           {/* Instellingen */}
@@ -252,72 +301,99 @@ export default function TshirtDesigner({ onBack }: { onBack: () => void }) {
               <>
                 <h1 className="text-2xl font-black tracking-tight sm:text-3xl">Ontwerp je eigen T-shirt</h1>
 
-                {/* Kanten */}
-                <div className="space-y-2">
-                  <p className="text-sm font-bold text-slate-700">Bedrukken op</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {SIDES.map((side) => (
-                      <button key={side} type="button" role="switch" aria-checked={enabled[side]} onClick={() => toggleSide(side)} className={`flex min-h-[52px] items-center gap-3 rounded-xl border-2 px-3 text-sm font-bold ${enabled[side] ? 'border-sky-700 bg-sky-50 text-sky-900' : 'border-slate-200 text-slate-600 hover:border-slate-400'}`}>
-                        <span className={`relative h-6 w-11 rounded-full transition-colors ${enabled[side] ? 'bg-sky-700' : 'bg-slate-300'}`}>
-                          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${enabled[side] ? 'left-[22px]' : 'left-0.5'}`} />
-                        </span>
-                        {sideLabel(side)}
+                {/* Kant kiezen */}
+                <div className="grid grid-cols-2 rounded-2xl bg-slate-100 p-1" role="tablist" aria-label="Kant van het shirt">
+                  {SIDES.map((side) => {
+                    const count = designs.filter((design) => design.side === side).length;
+                    return (
+                      <button key={side} type="button" role="tab" aria-selected={activeSide === side} onClick={() => switchSide(side)} className={`flex min-h-[48px] items-center justify-center gap-2 rounded-xl text-sm font-extrabold ${activeSide === side ? 'bg-white text-slate-900 shadow' : 'text-slate-500 hover:text-slate-800'}`}>
+                        <Shirt className="h-4 w-4" /> {sideLabel(side)}
+                        {count > 0 && <span className="rounded-full bg-sky-700 px-1.5 text-[10px] text-white">{count}</span>}
                       </button>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
 
-                {enabled[activeSide] && (
-                  <>
-                    {/* Upload */}
-                    <div className="space-y-2">
-                      <p className="text-sm font-bold text-slate-700">Afbeelding {sideLabel(activeSide).toLowerCase()}</p>
-                      {images[activeSide] ? (
-                        <div className="flex items-center gap-3 rounded-xl border border-slate-200 p-2">
-                          <img src={images[activeSide]!.dataUrl} alt="" className="h-14 w-14 rounded-lg bg-[conic-gradient(#e2e8f0_25%,#fff_0_50%,#e2e8f0_0_75%,#fff_0)] bg-[length:12px_12px] object-contain" />
-                          <div className="min-w-0 flex-1 text-xs">
-                            <p className="truncate font-bold text-slate-800">{images[activeSide]!.fileName}</p>
-                            <p className="text-slate-500">{images[activeSide]!.pixelWidth} × {images[activeSide]!.pixelHeight} px</p>
-                          </div>
-                          <button type="button" onClick={() => fileInput.current?.click()} className="min-h-[40px] rounded-lg border border-slate-300 px-3 text-xs font-bold hover:bg-slate-50">Vervangen</button>
-                          <button type="button" aria-label="Afbeelding verwijderen" onClick={() => setImages((current) => { const next = { ...current }; delete next[activeSide]; return next; })} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" /></button>
-                        </div>
-                      ) : (
-                        <div
-                          onDragOver={(event) => { event.preventDefault(); setDragOver(true); }}
-                          onDragLeave={() => setDragOver(false)}
-                          onDrop={(event) => { event.preventDefault(); setDragOver(false); chooseFile(event.dataTransfer.files?.[0]); }}
-                          onClick={() => fileInput.current?.click()}
-                          role="button"
-                          tabIndex={0}
-                          onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') fileInput.current?.click(); }}
-                          className={`flex cursor-pointer flex-col items-center rounded-2xl border-2 border-dashed px-4 py-7 text-center ${dragOver ? 'border-[#e31c24] bg-rose-50' : 'border-sky-700/50 bg-slate-50/60 hover:bg-slate-50'}`}
-                        >
-                          {loadingSide === activeSide ? <Loader2 className="h-9 w-9 animate-spin text-slate-500" /> : <UploadCloud className="h-9 w-9 text-slate-500" />}
-                          <p className="mt-2 text-base font-extrabold">Drag &amp; drop</p>
-                          <p className="text-sm text-slate-600">of klik om te uploaden</p>
-                          <p className="mt-1 text-[11px] text-slate-500">PNG of JPG, max 6 MB. Liefst PNG met transparante achtergrond.</p>
-                        </div>
-                      )}
-                      <input ref={fileInput} type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" className="sr-only" onChange={(event) => { chooseFile(event.target.files?.[0]); event.target.value = ''; }} />
-                      {fileError && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">{fileError}</p>}
-                      {active && <CheckList items={active.checks} />}
-                    </div>
-
-                    {/* Formaat */}
-                    <div className="space-y-2">
-                      <p className="text-sm font-bold text-slate-700">Formaat {sideLabel(activeSide).toLowerCase()}</p>
-                      <div className="grid grid-cols-3 gap-2">
-                        {(Object.keys(TSHIRT_FORMATS) as TshirtFormat[]).map((format) => (
-                          <button key={format} type="button" onClick={() => { setFormats((current) => ({ ...current, [activeSide]: format })); setPlacements((current) => ({ ...current, [activeSide]: DEFAULT_PLACEMENT })); }} aria-pressed={formats[activeSide] === format} className={chip(formats[activeSide] === format)}>
-                            {format === 'klein' ? (activeSide === 'voor' ? 'Borstlogo' : 'Klein') : TSHIRT_FORMATS[format].short}
-                            <span className="block text-[10px] font-semibold opacity-70">{format === 'klein' ? '10 × 10 cm' : format === 'a4' ? '21 × 30 cm' : '30 × 42 cm'}</span>
-                          </button>
-                        ))}
+                {/* Opdrukken op deze kant */}
+                <div className="space-y-2">
+                  <p className="text-sm font-bold text-slate-700">Opdrukken op de {sideLabel(activeSide).toLowerCase()}</p>
+                  {sideDesigns.map((design, index) => {
+                    const { format, price: printPrice } = tierPrice(design);
+                    const level = worstLevel(checksFor(design));
+                    return (
+                      <div key={design.id} className={`flex items-center gap-3 rounded-xl border-2 p-2 ${selectedId === design.id ? 'border-sky-700 bg-sky-50/50' : 'border-slate-200'}`}>
+                        <button type="button" onClick={() => setSelectedId(design.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                          <img src={design.image.dataUrl} alt="" className="h-12 w-12 shrink-0 rounded-lg bg-[conic-gradient(#e2e8f0_25%,#fff_0_50%,#e2e8f0_0_75%,#fff_0)] bg-[length:12px_12px] object-contain" />
+                          <span className="min-w-0 text-xs">
+                            <span className="block truncate font-bold text-slate-800">{index + 1}. {design.image.fileName}</span>
+                            <span className="block text-slate-500">{cm(design.widthMm)} × {cm(design.heightMm)} cm · {TSHIRT_FORMATS[format].short} · {money(printPrice)} p/st</span>
+                          </span>
+                          {level !== 'ok' && <AlertTriangle className={`h-4 w-4 shrink-0 ${level === 'error' ? 'text-rose-600' : 'text-amber-500'}`} aria-label="Let op" />}
+                        </button>
+                        <button type="button" aria-label="Opdruk verwijderen" onClick={() => removeDesign(design.id)} className="rounded-lg p-2 text-slate-500 hover:bg-rose-50 hover:text-[#e31c24]"><Trash2 className="h-4 w-4" /></button>
                       </div>
+                    );
+                  })}
+
+                  {selected && selected.side === activeSide && (
+                    <div className="space-y-2 rounded-xl bg-slate-50 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="font-bold text-slate-700">Breedte</span>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          min="2"
+                          max="42"
+                          step="0.5"
+                          value={Math.round(selected.widthMm / 5) / 2}
+                          onChange={(event) => {
+                            const wanted = Number(event.target.value) * 10;
+                            if (!(wanted > 0)) return;
+                            const factor = clampScale(selected.widthMm, selected.heightMm, wanted / selected.widthMm);
+                            updateDesign(clampPosition({ ...selected, widthMm: selected.widthMm * factor, heightMm: selected.heightMm * factor }));
+                          }}
+                          aria-label="Breedte in cm"
+                          className="min-h-[40px] w-20 rounded-lg border border-slate-300 px-2 text-sm font-bold tabular-nums"
+                        />
+                        <span className="text-slate-500">cm × {cm(selected.heightMm)} cm</span>
+                        <button type="button" onClick={() => updateDesign({ ...selected, xMm: 0 })} className="ml-auto inline-flex min-h-[40px] items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 font-bold hover:bg-slate-100"><Crosshair className="h-3.5 w-3.5" /> Centreren</button>
+                      </div>
+                      <CheckList items={selectedChecks} />
                     </div>
-                  </>
-                )}
+                  )}
+
+                  {sideDesigns.length === 0 ? (
+                    <div
+                      onDragOver={(event) => { event.preventDefault(); setDragOver(true); }}
+                      onDragLeave={() => setDragOver(false)}
+                      onDrop={(event) => { event.preventDefault(); setDragOver(false); addFile(event.dataTransfer.files?.[0]); }}
+                      onClick={() => fileInput.current?.click()}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') fileInput.current?.click(); }}
+                      className={`flex cursor-pointer flex-col items-center rounded-2xl border-2 border-dashed px-4 py-7 text-center ${dragOver ? 'border-[#e31c24] bg-rose-50' : 'border-sky-700/50 bg-slate-50/60 hover:bg-slate-50'}`}
+                    >
+                      {loading ? <Loader2 className="h-9 w-9 animate-spin text-slate-500" /> : <UploadCloud className="h-9 w-9 text-slate-500" />}
+                      <p className="mt-2 text-base font-extrabold">Drag &amp; drop</p>
+                      <p className="text-sm text-slate-600">of klik om te uploaden</p>
+                      <p className="mt-1 text-[11px] text-slate-500">PNG of JPG, max 20 MB. Liefst PNG met transparante achtergrond.</p>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={loading || designs.length >= TSHIRT_MAX_PRINTS}
+                      onClick={() => fileInput.current?.click()}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => { event.preventDefault(); addFile(event.dataTransfer.files?.[0]); }}
+                      className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 text-sm font-bold text-slate-700 hover:border-slate-500 disabled:opacity-50"
+                    >
+                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Extra opdruk toevoegen
+                    </button>
+                  )}
+                  <input ref={fileInput} type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" className="sr-only" onChange={(event) => { addFile(event.target.files?.[0]); event.target.value = ''; }} />
+                  {fileError && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">{fileError}</p>}
+                  <p className="text-[11px] text-slate-500">De prijs per opdruk hangt af van de maat: tot 10 × 10 cm, tot A4 (21 × 30 cm) of tot A3 (30 × 42 cm).</p>
+                </div>
 
                 {/* Kleur */}
                 <div className="space-y-2">
@@ -366,8 +442,7 @@ export default function TshirtDesigner({ onBack }: { onBack: () => void }) {
                   ) : <p className="text-xs text-slate-500">{price.warning}</p>}
                 </div>
 
-                {missingImages.length > 0 && price.valid && <p className="text-xs font-semibold text-amber-800">Voeg nog een afbeelding toe voor de {missingImages.join(' en ')}.</p>}
-                <button type="button" disabled={!canContinue} onClick={() => setStep('details')} className="flex min-h-[56px] w-full items-center justify-between rounded-2xl bg-gradient-to-r from-[#e31c24] to-[#b8141a] px-6 text-lg font-extrabold text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-50">
+                <button type="button" disabled={!canContinue} onClick={() => { setSelectedId(null); setStep('details'); }} className="flex min-h-[56px] w-full items-center justify-between rounded-2xl bg-gradient-to-r from-[#e31c24] to-[#b8141a] px-6 text-lg font-extrabold text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-50">
                   <span>Bestellen</span>
                   <span className="tabular-nums">{money(price.valid ? price.total : 0)}</span>
                 </button>

@@ -4,8 +4,9 @@
  */
 import type { TshirtColor } from './tshirtPricing';
 
-/** De server accepteert afbeeldingen tot 6 MB per kant. */
-export const TSHIRT_MAX_FILE_BYTES = 6 * 1024 * 1024;
+/** Maximaal 20 MB per afbeelding en 40 MB voor alle opdrukken samen. */
+export const TSHIRT_MAX_FILE_BYTES = 20 * 1024 * 1024;
+export const TSHIRT_MAX_TOTAL_BYTES = 40 * 1024 * 1024;
 
 export interface TshirtImage {
   fileName: string;
@@ -13,6 +14,8 @@ export interface TshirtImage {
   dataUrl: string;
   pixelWidth: number;
   pixelHeight: number;
+  /** Bestandsgrootte in bytes. */
+  bytes: number;
   /** Heeft de afbeelding (deels) transparante pixels? */
   hasTransparency: boolean;
   /** Gemiddelde helderheid (0–255) van de zichtbare pixels. */
@@ -44,7 +47,7 @@ async function detectType(file: File): Promise<'image/png' | 'image/jpeg' | null
 export async function loadTshirtImage(file: File): Promise<TshirtImage> {
   const fileType = await detectType(file);
   if (!fileType) throw new Error('Alleen PNG- of JPG-afbeeldingen zijn mogelijk.');
-  if (file.size > TSHIRT_MAX_FILE_BYTES) throw new Error('Het bestand is groter dan 6 MB. Maak het kleiner of lever het aan in de winkel.');
+  if (file.size > TSHIRT_MAX_FILE_BYTES) throw new Error('Het bestand is groter dan 20 MB. Maak het kleiner of lever het aan in de winkel.');
   const rawUrl = await readAsDataUrl(file);
   // Zorg dat het mime-type in de data-URL klopt met de inhoud.
   const dataUrl = rawUrl.replace(/^data:[^;,]*/, `data:${fileType}`);
@@ -82,7 +85,7 @@ export async function loadTshirtImage(file: File): Promise<TshirtImage> {
     averageLuminance = visible ? luminanceSum / visible : 128;
   }
 
-  return { fileName: file.name, fileType, dataUrl, pixelWidth: image.naturalWidth, pixelHeight: image.naturalHeight, hasTransparency, averageLuminance };
+  return { fileName: file.name, fileType, dataUrl, pixelWidth: image.naturalWidth, pixelHeight: image.naturalHeight, bytes: file.size, hasTransparency, averageLuminance };
 }
 
 /** Effectieve resolutie (dpi) op de printmaat. */
