@@ -203,7 +203,7 @@ export default function App() {
   };
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(false);
   /** Wie is ingelogd: beheerder ziet alles, een filiaal alleen de eigen en gedeelde opdrachten. */
-  const [sessionRole, setSessionRole] = useState<'admin' | 'branch'>('admin');
+  const [sessionRole, setSessionRole] = useState<'admin' | 'branch'>('branch');
   const [sessionBranch, setSessionBranch] = useState<string>('');
   const [loginBranch, setLoginBranch] = useState<string>('');
   const [branchFilter, setBranchFilter] = useState<string>('Alle');
@@ -3054,7 +3054,11 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     setIsAdminAuthenticated(false);
-                            fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => undefined);
+                    setSessionRole('branch');
+                    setSessionPerms([]);
+                    setSessionBranch('');
+                    setSessionStaffName('');
+                    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => undefined);
                   }}
                   className="px-4 py-2 bg-white hover:bg-rose-50 text-slate-700 hover:text-brand-red text-xs font-bold rounded-lg border border-slate-200 hover:border-rose-200 transition-colors cursor-pointer"
                 >

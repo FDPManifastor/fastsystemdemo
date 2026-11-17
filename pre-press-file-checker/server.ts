@@ -189,7 +189,7 @@ async function getAdminSession(req: express.Request) {
   return valid ? sessionId : null;
 }
 
-/** Wie is ingelogd? Sessies zonder rolgegevens zijn van vóór de filialen en gelden als beheerder. */
+/** Wie is ingelogd? Alleen een uitdrukkelijk als beheerder aangemaakte sessie is beheerder. */
 async function getSessionInfo(req: express.Request): Promise<SessionInfo | null> {
   const sessionId = await getAdminSession(req);
   if (!sessionId) return null;
@@ -202,7 +202,9 @@ async function getSessionInfo(req: express.Request): Promise<SessionInfo | null>
     if (!member || !isBranch(member.branch)) return null;
     return { sessionId, role: "branch", branch: member.branch, staffId, staffName: member.name, perms: parsePerms(await storage.getMeta(`staffperm:${staffId}`)) };
   }
-  return { sessionId, role: "admin", branch: "", perms: null };
+  // Alleen sessies die uitdrukkelijk als beheerder zijn aangemaakt tellen als beheerder (oude sessies zonder rol niet meer).
+  if (raw === "admin") return { sessionId, role: "admin", branch: "", perms: null };
+  return null;
 }
 
 const orderBranch = (order: any) => (isBranch(order?.branch) ? order.branch : DEFAULT_BRANCH);
