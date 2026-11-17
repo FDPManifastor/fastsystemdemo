@@ -174,7 +174,7 @@ async function startServer() {
   app.set("trust proxy", process.env.NODE_ENV === "production" ? 1 : false);
   app.use(applySecurityHeaders);
   // Bestandsuploads (base64 in json) mogen groter zijn dan gewone verzoeken.
-  app.use("/api/public/orders", express.json({ limit: "32mb" }));
+  app.use(["/api/public/orders", "/api/public/ticket-drafts"], express.json({ limit: "32mb" }));
   app.use(express.json({ limit: "20mb" }));
   app.use(express.urlencoded({ limit: "32kb", extended: true }));
   app.use("/api", rateLimit(RATE_LIMIT_MAX_REQUESTS));
@@ -769,6 +769,87 @@ async function startServer() {
       return res.status(404).json({ error: "Order not found." });
     }
     return res.json({ success: true, order: serializeAdminOrder(updated) });
+  }));
+
+  // Concept-uploads: tijdens het maken van een opdrachtbon scant de klant een QR-code en stuurt het
+  // bestand vanaf de telefoon naar de balie, nog voordat de bon is opgeslagen. Blijft 8 uur bewaard.
+  const DRAFT_TTL_MS = 8 * 60 * 60 * 1000;
+  const DRAFT_TOKEN = /^[a-f0-9]{48}$/;
+
+  async function readDraft(token: string) {
+    if (!DRAFT_TOKEN.test(token)) return null;
+    const raw = await storage.getMeta(`draft:${token}`);
+    if (!raw) return null;
+    try {
+      const draft = JSON.parse(raw);
+      if (typeof draft?.createdAt !== "number" || Date.now() - draft.createdAt > DRAFT_TTL_MS) {
+        await storage.setMeta(`draft:${token}`, "");
+        return null;
+      }
+      return draft;
+    } catch {
+      return null;
+    }
+  }
+
+  app.post("/api/ticket-drafts", rateLimit(30), asyncRoute(async (req, res) => {
+    const clean = (value: unknown, max: number) => (typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, max) : "");
+    const size = (value: unknown) => {
+      const number = Number(value);
+      return Number.isFinite(number) && number > 0 && number < 100000 ? number : null;
+    };
+    const token = crypto.randomBytes(24).toString("hex");
+    const draft = {
+      createdAt: Date.now(),
+      description: clean(req.body?.description, 200),
+      widthMm: size(req.body?.widthMm),
+      heightMm: size(req.body?.heightMm)
+    };
+    await storage.setMeta(`draft:${token}`, JSON.stringify(draft));
+    return res.json({ token, expiresAt: draft.createdAt + DRAFT_TTL_MS });
+  }));
+
+  app.get("/api/public/ticket-drafts/:token", asyncRoute(async (req, res) => {
+    const draft = await readDraft(req.params.token);
+    if (!draft) return res.status(404).json({ error: "Deze uploadlink is verlopen of bestaat niet." });
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({
+      description: draft.description,
+      widthMm: draft.widthMm,
+      heightMm: draft.heightMm,
+      expiresAt: draft.createdAt + DRAFT_TTL_MS,
+      file: draft.file ? { fileName: draft.file.fileName, fileType: draft.file.fileType, size: draft.file.size, uploadedAt: draft.file.uploadedAt } : null
+    });
+  }));
+
+  app.post("/api/public/ticket-drafts/:token/file", rateLimit(10), asyncRoute(async (req, res) => {
+    const draft = await readDraft(req.params.token);
+    if (!draft) return res.status(404).json({ error: "Deze uploadlink is verlopen of bestaat niet." });
+    const file = validateCustomerFile(req.body?.file);
+    if (!file) return res.status(400).json({ error: "Upload een geldig PDF-, PNG- of JPG-bestand van maximaal 20 MB." });
+    draft.file = { ...file, uploadedAt: new Date().toISOString() };
+    await storage.setMeta(`draft:${req.params.token}`, JSON.stringify(draft));
+    return res.json({ success: true });
+  }));
+
+  app.get("/api/public/ticket-drafts/:token/file", asyncRoute(async (req, res) => {
+    const draft = await readDraft(req.params.token);
+    if (!draft?.file) return res.status(404).json({ error: "Nog geen bestand ontvangen." });
+    const match = /^data:[^;]+;base64,(.+)$/.exec(draft.file.dataUrl);
+    if (!match) return res.status(404).json({ error: "Bestand niet beschikbaar." });
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Type", draft.file.fileType);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-File-Name", encodeURIComponent(draft.file.fileName));
+    return res.send(Buffer.from(match[1], "base64"));
+  }));
+
+  app.delete("/api/public/ticket-drafts/:token/file", rateLimit(30), asyncRoute(async (req, res) => {
+    const draft = await readDraft(req.params.token);
+    if (!draft) return res.status(404).json({ error: "Deze uploadlink is verlopen of bestaat niet." });
+    delete draft.file;
+    await storage.setMeta(`draft:${req.params.token}`, JSON.stringify(draft));
+    return res.json({ success: true });
   }));
 
   app.post("/api/public/orders/:uploadToken/product-files", rateLimit(10), asyncRoute(async (req, res) => {

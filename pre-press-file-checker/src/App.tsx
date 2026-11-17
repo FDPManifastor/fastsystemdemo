@@ -49,6 +49,7 @@ import { renderPdfFile } from './utils/pdfLoader';
 import OrderTicketWorkspace from './components/OrderTicketWorkspace';
 import TicketProductUploadPortal from './components/TicketProductUploadPortal';
 import ImpositionModal from './components/ImpositionModal';
+import { autoImposeSettings, buildImposedPdf } from './utils/imposition';
 import { FileThumb } from './components/ticket/TicketTools';
 
 function TrackingQr({ value, size = 150 }: { value: string; size?: number }) {
@@ -194,6 +195,36 @@ export default function App() {
   const [trackingQrCode, setTrackingQrCode] = useState<string>('');
   const [orders, setOrders] = useState<any[]>([]);
   const [impositionFileId, setImpositionFileId] = useState<string | null>(null);
+  const [quickCropMarks, setQuickCropMarks] = useState(true);
+  const [quickImposeBusyId, setQuickImposeBusyId] = useState<string | null>(null);
+
+  /** Direct inslaan zonder venster: SRA3 vol, of bij posters op posterformaat; snijranden naar keuze. */
+  const quickImpose = async (fileUrl: string, file: { id: string; fileName: string; fileType: string }, widthMm?: number, heightMm?: number) => {
+    if (!widthMm || !heightMm) {
+      window.alert('Het eindformaat van dit product ontbreekt. Gebruik "Inslaan" en vul het formaat in.');
+      return;
+    }
+    setQuickImposeBusyId(file.id);
+    try {
+      const response = await fetch(fileUrl, { credentials: 'include' });
+      if (!response.ok) throw new Error('Het originele bestand kon niet worden opgehaald.');
+      const settings = autoImposeSettings(widthMm, heightMm, 2, quickCropMarks);
+      const result = await buildImposedPdf(new Uint8Array(await response.arrayBuffer()), file.fileType, settings);
+      const url = URL.createObjectURL(new Blob([result as unknown as BlobPart], { type: 'application/pdf' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${file.fileName.replace(/\.[^.]+$/, '')}_${settings.columns * settings.rows}-op_${settings.sheetWidthMm}x${settings.sheetHeightMm}mm.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (reason) {
+      console.error('Direct inslaan mislukt:', reason);
+      window.alert(reason instanceof Error ? reason.message : 'Het inslaan is mislukt.');
+    } finally {
+      setQuickImposeBusyId(null);
+    }
+  };
   const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [adminCategoryFilter, setAdminCategoryFilter] = useState<string>('All');
@@ -3730,6 +3761,17 @@ export default function App() {
                                           >
                                             Downloaden
                                           </a>
+                                          <label className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
+                                            <input type="checkbox" checked={quickCropMarks} onChange={(event) => setQuickCropMarks(event.target.checked)} className="h-3.5 w-3.5 accent-[#e31c24]" /> Snijranden
+                                          </label>
+                                          <button
+                                            type="button"
+                                            disabled={quickImposeBusyId === file.id}
+                                            onClick={() => quickImpose(fileUrl, file, Number(fileLine?.widthMm || order.customWidth) || undefined, Number(fileLine?.heightMm || order.customHeight) || undefined)}
+                                            className="rounded-lg bg-[#e31c24] px-3 py-2 text-[10px] font-bold text-white hover:bg-[#b8141a] disabled:opacity-50"
+                                          >
+                                            {quickImposeBusyId === file.id ? 'Bezig…' : 'Direct inslaan (SRA3/poster)'}
+                                          </button>
                                           <button
                                             type="button"
                                             onClick={() => setImpositionFileId(file.id)}

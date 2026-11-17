@@ -149,3 +149,37 @@ export async function buildImposedPdf(source: Uint8Array, fileType: string, sett
   output.setProducer('FD Printing Center');
   return output.save();
 }
+
+export interface AutoImposition extends ImpositionSettings {
+  /** 'sra3': zo veel mogelijk exemplaren op SRA3; 'product': te groot voor SRA3, vel op posterformaat plus afloop en snijranden. */
+  sheetKind: 'sra3' | 'product';
+}
+
+/**
+ * Standaard indeling: kleine producten zo vol mogelijk op SRA3 (staand of liggend, wat het meeste past),
+ * grote producten zoals posters (bijv. A1) één per vel op het formaat van het product plus afloop en ruimte voor snijranden.
+ */
+export function autoImposeSettings(trimWidthMm: number, trimHeightMm: number, bleedMm = 2, cropMarks = true): AutoImposition {
+  const base = { trimWidthMm, trimHeightMm, bleedMm, cropMarks };
+  const sra3 = SHEET_PRESETS[0];
+  const portrait = { ...base, sheetWidthMm: sra3.width, sheetHeightMm: sra3.height, columns: 1, rows: 1 };
+  const landscape = { ...base, sheetWidthMm: sra3.height, sheetHeightMm: sra3.width, columns: 1, rows: 1 };
+  const portraitPlan = planImposition(portrait);
+  const landscapePlan = planImposition(landscape);
+  const portraitCount = portraitPlan.maxColumns * portraitPlan.maxRows;
+  const landscapeCount = landscapePlan.maxColumns * landscapePlan.maxRows;
+  if (portraitCount > 0 || landscapeCount > 0) {
+    const useLandscape = landscapeCount > portraitCount;
+    const plan = useLandscape ? landscapePlan : portraitPlan;
+    return { ...(useLandscape ? landscape : portrait), columns: plan.maxColumns, rows: plan.maxRows, sheetKind: 'sra3' };
+  }
+  const margin = cropMarks ? MARK_GAP_MM + MARK_LENGTH_MM : 0;
+  return {
+    ...base,
+    sheetWidthMm: Math.ceil(trimWidthMm + 2 * bleedMm + 2 * margin),
+    sheetHeightMm: Math.ceil(trimHeightMm + 2 * bleedMm + 2 * margin),
+    columns: 1,
+    rows: 1,
+    sheetKind: 'product',
+  };
+}

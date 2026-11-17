@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import { Calculator, Eraser, Paperclip, Plus, Printer, Save, Send, ShieldCheck, Trash2, X } from 'lucide-react';
+import { Calculator, Eraser, QrCode, Paperclip, Plus, Printer, Save, Send, ShieldCheck, Trash2, X } from 'lucide-react';
 import { PrintProduct } from '../types';
 import { FDLogo } from './FDLogo';
 import type { CatalogProduct } from '../utils/pricing';
@@ -38,6 +38,8 @@ interface TicketLine {
   priceSource: string;
   file: File | null;
   prepressNote: string;
+  /** Uploadlink voor de klant (QR) terwijl de bon nog wordt gemaakt. */
+  draftToken: string;
 }
 
 interface TicketFileStatus {
@@ -103,6 +105,9 @@ const calculatorKindFor = (line: { description: string; category: string }): 'st
   return null;
 };
 
+const DRAFT_STORAGE_KEY = 'fd_bon_concept_v1';
+const DRAFT_KEEP_MS = 8 * 60 * 60 * 1000;
+
 const COMPANY_FOOTER = [
   'Bijlmerplein 375 | 1102 DK Amsterdam | Tel : 020 - 363 1445',
   'www.fdprintingcenter.nl | amsterdam@fdprintingcenter.nl',
@@ -123,6 +128,7 @@ const emptyLine = (product?: PrintProduct, quantity = '1'): TicketLine => ({
   priceSource: '',
   file: null,
   prepressNote: '',
+  draftToken: '',
 });
 
 function parseAmount(value: string) {
@@ -308,6 +314,11 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const depositInputRef = useRef<HTMLInputElement>(null);
   const [notes, setNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
+  const [qrOpenIndex, setQrOpenIndex] = useState<number | null>(null);
+  const [restoredAt, setRestoredAt] = useState<number | null>(null);
+  const draftRestoredRef = useRef(false);
+  const [draftReady, setDraftReady] = useState(false);
+  const handledDraftFiles = useRef<Set<string>>(new Set());
   const [error, setError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [createdTicket, setCreatedTicket] = useState<CreatedTicket | null>(null);
@@ -370,6 +381,125 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
     updateLine(lineIndex, { file, prepressNote: '' });
     if (file) setPrepressIndex(lineIndex);
   };
+
+  // Een bon die nog niet is afgerond blijft 8 uur bewaard in deze browser (zonder bestanden).
+  useEffect(() => {
+    if (draftRestoredRef.current) return;
+    draftRestoredRef.current = true;
+    try {
+      setDraftReady(true);
+      const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (!saved || typeof saved.savedAt !== 'number' || Date.now() - saved.savedAt > DRAFT_KEEP_MS || !saved.data) {
+        window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+        return;
+      }
+      const d = saved.data;
+      if (typeof d.ticketNumber === 'string') setTicketNumber(d.ticketNumber);
+      setCustomerName(String(d.customerName ?? ''));
+      setContactPerson(String(d.contactPerson ?? ''));
+      setAddress(String(d.address ?? ''));
+      setPostcodeCity(String(d.postcodeCity ?? ''));
+      setEmail(String(d.email ?? ''));
+      setPhone(String(d.phone ?? ''));
+      setReference(String(d.reference ?? ''));
+      if (Array.isArray(d.lines) && d.lines.length) setLines(d.lines.map((line: Partial<TicketLine>) => ({ ...emptyLine(), ...line, file: null })));
+      setDeliveryDate(String(d.deliveryDate ?? ''));
+      setDeliveryMethod(d.deliveryMethod === 'Bezorgen' ? 'Bezorgen' : 'Afhalen');
+      setDeliveryAddress(String(d.deliveryAddress ?? ''));
+      setAssignedStaff(String(d.assignedStaff ?? ''));
+      setHelpedBy(String(d.helpedBy ?? ''));
+      if (typeof d.status === 'string') setStatus(d.status);
+      setCustomerApproved(Boolean(d.customerApproved));
+      setPrepayment(String(d.prepayment ?? '0,00'));
+      setPaidInAdvance(Boolean(d.paidInAdvance));
+      setDepositOn(Boolean(d.depositOn));
+      setRestPaid(Boolean(d.restPaid));
+      setNotes(String(d.notes ?? ''));
+      setInternalNotes(String(d.internalNotes ?? ''));
+      setRestoredAt(saved.savedAt);
+    } catch {
+      // Een onleesbaar concept wordt genegeerd.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!draftReady || createdTicket) return;
+    const hasContent = Boolean(customerName.trim() || email.trim() || phone.trim() || notes.trim() || lines.some((line) => line.description.trim() || line.price.trim() || line.draftToken));
+    try {
+      if (!hasContent) {
+        window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+        return;
+      }
+      const data = {
+        ticketNumber, customerName, contactPerson, address, postcodeCity, email, phone, reference, deliveryDate, deliveryMethod, deliveryAddress,
+        assignedStaff, helpedBy, status, customerApproved, prepayment, paidInAdvance, depositOn, restPaid, notes, internalNotes,
+        lines: lines.map(({ file: _file, ...line }) => line),
+      };
+      window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), data }));
+    } catch {
+      // Opslag vol of geblokkeerd: de bon blijft gewoon werken, alleen zonder concept.
+    }
+  }, [ticketNumber, customerName, contactPerson, address, postcodeCity, email, phone, reference, deliveryDate, deliveryMethod, deliveryAddress, assignedStaff, helpedBy, status, customerApproved, prepayment, paidInAdvance, depositOn, restPaid, notes, internalNotes, lines, createdTicket, draftReady]);
+
+  const startDraftUpload = async (lineIndex: number) => {
+    const line = lines[lineIndex];
+    setError('');
+    setQrOpenIndex(qrOpenIndex === lineIndex ? null : lineIndex);
+    if (!line || line.draftToken) return;
+    try {
+      const response = await fetch('/api/ticket-drafts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: line.description, widthMm: Number(line.width), heightMm: Number(line.height) }),
+      });
+      if (!response.ok) throw new Error('mislukt');
+      const result = await response.json();
+      updateLine(lineIndex, { draftToken: String(result.token) });
+    } catch {
+      setError('De uploadcode kon niet worden aangemaakt. Probeer het opnieuw.');
+      setQrOpenIndex(null);
+    }
+  };
+
+  // Wacht op bestanden die de klant via de QR-code stuurt en zet ze direct in de pre-press check.
+  const waitingKey = lines.map((line) => (line.file ? '' : line.draftToken)).join('|');
+  useEffect(() => {
+    const waiting = lines.map((line, index) => ({ index, token: line.draftToken, has: Boolean(line.file) })).filter((entry) => entry.token && !entry.has);
+    if (!waiting.length || createdTicket) return;
+    let stopped = false;
+    const poll = async () => {
+      for (const entry of waiting) {
+        try {
+          const infoResponse = await fetch(`/api/public/ticket-drafts/${entry.token}`, { cache: 'no-store' });
+          if (infoResponse.status === 404) {
+            updateLine(entry.index, { draftToken: '' });
+            continue;
+          }
+          if (!infoResponse.ok) continue;
+          const info = await infoResponse.json();
+          const handledKey = `${entry.token}:${info.file?.uploadedAt}`;
+          if (!info.file || stopped || handledDraftFiles.current.has(handledKey)) continue;
+          const fileResponse = await fetch(`/api/public/ticket-drafts/${entry.token}/file`, { cache: 'no-store' });
+          if (!fileResponse.ok) continue;
+          handledDraftFiles.current.add(handledKey);
+          const blob = await fileResponse.blob();
+          await fetch(`/api/public/ticket-drafts/${entry.token}/file`, { method: 'DELETE' }).catch(() => undefined);
+          chooseFile(entry.index, new File([blob], info.file.fileName, { type: info.file.fileType }));
+        } catch {
+          // Volgende ronde opnieuw proberen.
+        }
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 4000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingKey, createdTicket]);
 
   const totals = useMemo(() => {
     let subtotal = 0;
@@ -508,6 +638,9 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   };
 
   const resetForm = () => {
+    try { window.localStorage.removeItem(DRAFT_STORAGE_KEY); } catch { /* geen opslag beschikbaar */ }
+    setRestoredAt(null);
+    setQrOpenIndex(null);
     setTicketNumber(newTicketNumber());
     setCustomerName('');
     setContactPerson('');
@@ -627,6 +760,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         return;
       }
       const uploadLinks: CreatedTicket['productUploadLinks'] = Array.isArray(result.productUploadLinks) ? result.productUploadLinks : [];
+      try { window.localStorage.removeItem(DRAFT_STORAGE_KEY); } catch { /* geen opslag beschikbaar */ }
       setCreatedTicket({
         id: result.orderId,
         trackingToken: result.trackingToken,
@@ -924,6 +1058,12 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   return (
     <div className="mx-auto max-w-4xl animate-fade-in font-sans">
       <form onSubmit={submitOrder} className="space-y-4">
+        {restoredAt && (
+          <div role="status" className="no-print flex flex-wrap items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
+            <span>Niet afgeronde bon van {new Date(restoredAt).toLocaleString('nl-NL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} hersteld. Bestanden moeten opnieuw worden toegevoegd; een QR-code blijft werken.</span>
+            <button type="button" onClick={() => { if (window.confirm('Dit concept verwijderen en opnieuw beginnen?')) resetForm(); }} className="rounded-md border border-sky-300 bg-white px-2 py-1 font-bold hover:bg-sky-100">Concept verwijderen</button>
+          </div>
+        )}
         {/* Werkbalk, zoals de knoppen bovenaan de papieren bon */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -1083,7 +1223,11 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                         />
                       </label>
                     )}
-                    {!line.file && <span className="text-[10px] text-slate-500">of: na opslaan krijgt dit product een QR-code waarmee de klant zelf uploadt</span>}
+                    {!line.file && (
+                      <button type="button" onClick={() => startDraftUpload(index)} aria-expanded={qrOpenIndex === index} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
+                        <QrCode className="h-3.5 w-3.5" /> QR: klant uploadt nu
+                      </button>
+                    )}
                     {line.priceSource && <span className="text-[10px] text-slate-400">Prijs: {line.priceSource}</span>}
                   </div>
                 </div>
@@ -1119,6 +1263,24 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 <button type="button" aria-label={`Regel ${index + 1} verwijderen`} disabled={lines.length === 1} onClick={() => setLines((current) => current.filter((_, row) => row !== index))} className="flex h-8 w-8 items-center justify-center justify-self-end rounded-md text-slate-400 hover:bg-rose-50 hover:text-[#e31c24] disabled:cursor-not-allowed disabled:opacity-30">
                   <Trash2 className="h-4 w-4" />
                 </button>
+
+                {qrOpenIndex === index && !line.file && (
+                  <div className="col-span-full flex items-center gap-3 rounded-xl border border-slate-300 bg-slate-50 p-3">
+                    {line.draftToken ? (
+                      <>
+                        <TicketQr value={`${window.location.origin}/upload?draft=${line.draftToken}`} label={line.description || `regel ${index + 1}`} />
+                        <div className="min-w-0 space-y-1 text-xs text-slate-600">
+                          <p className="font-bold text-slate-900">Klant scant en stuurt het bestand door</p>
+                          <p>Zodra het bestand binnen is, opent hier automatisch de pre-press check om het op {line.width} × {line.height} mm te zetten. De code blijft 8 uur geldig.</p>
+                          <p className="animate-pulse font-semibold text-amber-700">Wacht op bestand van de klant…</p>
+                          <a className="block break-all text-[10px] font-semibold text-blue-700 underline" href={`${window.location.origin}/upload?draft=${line.draftToken}`}>{`${window.location.origin}/upload?draft=${line.draftToken}`}</a>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-xs text-slate-500">Uploadcode wordt aangemaakt…</p>
+                    )}
+                  </div>
+                )}
 
                 {calculatorIndex === index && calculatorKindFor(line) && (
                   <PriceCalculatorPanel

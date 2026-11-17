@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Download, X } from 'lucide-react';
 import { loadFilePreview } from './ticket/TicketTools';
-import { SHEET_PRESETS, buildImposedPdf, planImposition } from '../utils/imposition';
+import { SHEET_PRESETS, autoImposeSettings, buildImposedPdf, planImposition } from '../utils/imposition';
 
 interface ImpositionModalProps {
   /** Adres waar het originele bestand opgehaald kan worden. */
@@ -19,12 +19,15 @@ const label = 'block text-[10px] font-bold uppercase text-slate-500';
 
 /** Inslaan in het backoffice: standaard 4 op een vel met snijlijnen en 2 mm afloop, alles instelbaar. */
 export default function ImpositionModal({ fileUrl, fileName, fileType, productName, defaultWidthMm, defaultHeightMm, onClose }: ImpositionModalProps) {
-  const [sheetId, setSheetId] = useState<string>('sra3');
-  const [customSheetW, setCustomSheetW] = useState('320');
-  const [customSheetH, setCustomSheetH] = useState('450');
-  const [landscape, setLandscape] = useState(false);
-  const [columns, setColumns] = useState('2');
-  const [rows, setRows] = useState('2');
+  // Automatische startindeling: SRA3 vol, of bij posters het formaat van de poster met afloop en snijranden.
+  const [initial] = useState(() => autoImposeSettings(defaultWidthMm || 148, defaultHeightMm || 210, 2, true));
+  const initialLandscape = initial.sheetWidthMm > initial.sheetHeightMm;
+  const [sheetId, setSheetId] = useState<string>(initial.sheetKind === 'sra3' ? 'sra3' : 'custom');
+  const [customSheetW, setCustomSheetW] = useState(String(Math.min(initial.sheetWidthMm, initial.sheetHeightMm)));
+  const [customSheetH, setCustomSheetH] = useState(String(Math.max(initial.sheetWidthMm, initial.sheetHeightMm)));
+  const [landscape, setLandscape] = useState(initialLandscape);
+  const [columns, setColumns] = useState(String(initial.columns));
+  const [rows, setRows] = useState(String(initial.rows));
   const [trimW, setTrimW] = useState(String(defaultWidthMm || 148));
   const [trimH, setTrimH] = useState(String(defaultHeightMm || 210));
   const [bleed, setBleed] = useState('2');
@@ -96,6 +99,21 @@ export default function ImpositionModal({ fileUrl, fileName, fileType, productNa
     setLandscape(useLandscape);
     setColumns(String(best.maxColumns));
     setRows(String(best.maxRows));
+  };
+
+  const autoLayout = () => {
+    const auto = autoImposeSettings(number(trimW), number(trimH), number(bleed), cropMarks);
+    if (!planImposition({ ...auto }).valid) {
+      setError('Vul eerst geldige maten in.');
+      return;
+    }
+    setError('');
+    setSheetId(auto.sheetKind === 'sra3' ? 'sra3' : 'custom');
+    setCustomSheetW(String(Math.min(auto.sheetWidthMm, auto.sheetHeightMm)));
+    setCustomSheetH(String(Math.max(auto.sheetWidthMm, auto.sheetHeightMm)));
+    setLandscape(auto.sheetWidthMm > auto.sheetHeightMm);
+    setColumns(String(auto.columns));
+    setRows(String(auto.rows));
   };
 
   const download = async () => {
@@ -171,12 +189,15 @@ export default function ImpositionModal({ fileUrl, fileName, fileType, productNa
               <label className="space-y-1"><span className={label}>Afloop (mm)</span><input inputMode="decimal" value={bleed} onChange={(event) => setBleed(event.target.value)} className={field} /></label>
               <label className="flex items-center gap-2 self-end rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-700">
                 <input type="checkbox" checked={cropMarks} onChange={(event) => setCropMarks(event.target.checked)} className="h-4 w-4 accent-[#e31c24]" />
-                Snijlijnen
+                Snijranden aan
               </label>
             </div>
 
             <button type="button" onClick={fillSheet} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">
               Vel maximaal vullen
+            </button>
+            <button type="button" onClick={autoLayout} className="ml-2 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">
+              Automatisch (SRA3 of posterformaat)
             </button>
           </div>
 
