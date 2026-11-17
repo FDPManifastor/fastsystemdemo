@@ -773,7 +773,7 @@ export default function App() {
       });
       if (response.ok) {
         setStaffNameInput("");
-        setStaffRoleInput("");
+        setStaffRoleInput("Pre-press Operator");
         fetchAdminStaff();
       } else {
         const err = await response.json();
