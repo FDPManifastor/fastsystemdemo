@@ -47,6 +47,7 @@ import { FDLogo } from './components/FDLogo';
 import { renderPdfFile } from './utils/pdfLoader';
 // Zware onderdelen worden pas geladen als ze nodig zijn, zodat de eerste pagina sneller opent.
 const OrderTicketWorkspace = lazy(() => import('./components/OrderTicketWorkspace'));
+import { saveOrderToComputer } from './utils/saveOrderFolder';
 const BackofficeOverview = lazy(() => import('./components/BackofficeOverview'));
 const TicketProductUploadPortal = lazy(() => import('./components/TicketProductUploadPortal'));
 const ImpositionModal = lazy(() => import('./components/ImpositionModal'));
@@ -210,6 +211,24 @@ export default function App() {
   const [branchFilter, setBranchFilter] = useState<string>('Alle');
   const [editingOrder, setEditingOrder] = useState<any | null>(null);
   const [clientBranch, setClientBranch] = useState('');
+  const [savingOrderId, setSavingOrderId] = useState<string | null>(null);
+  type OrderView = 'lopend' | 'actie' | 'klaar' | 'onbetaald' | 'afgerond' | 'alle';
+  const [orderView, setOrderView] = useState<OrderView>('lopend');
+  const orderStatusOf = (o: any) => String(o.status || 'Ingediend');
+  const orderOwed = (o: any) => (o.payment_status && o.payment_status !== 'Volledig betaald' ? Math.max(0, Number(o.remaining ?? o.grand_total ?? 0)) : 0);
+  const matchesOrderView = (o: any, view: OrderView) => {
+    const status = orderStatusOf(o);
+    if (view === 'alle') return true;
+    if (view === 'afgerond') return status === 'Verzonden';
+    if (view === 'lopend') return status !== 'Verzonden';
+    if (view === 'actie') return status !== 'Verzonden' && (status === 'Actie Vereist' || status === 'Ingediend' || !o.assignedStaff);
+    if (view === 'klaar') return status === 'Klaar voor Afhalen';
+    return orderOwed(o) > 0;
+  };
+  const orderUrgency = (o: any) => {
+    const rank: Record<string, number> = { 'Actie Vereist': 0, Ingediend: 1, 'In Controle': 2, 'Preflight Goedgekeurd': 3, 'In Druk': 4, 'Klaar voor Afhalen': 5, Verzonden: 9 };
+    return rank[orderStatusOf(o)] ?? 6;
+  };
   const [sessionPerms, setSessionPerms] = useState<string[]>([]);
   const [sessionStaffName, setSessionStaffName] = useState('');
   const [loginStaffId, setLoginStaffId] = useState('');
@@ -3200,78 +3219,40 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Backoffice Sub-nav Tabs */}
-                <div className="flex flex-wrap bg-white p-1.5 rounded-2xl border border-slate-200 max-w-2xl select-none font-sans gap-1 shadow-sm">
-                  <button
-                    onClick={() => setAdminSubTab('overview')}
-                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 focus:outline-hidden ${
-                      adminSubTab === 'overview'
-                        ? 'bg-brand-red text-white shadow-sm font-extrabold'
-                        : 'text-slate-500 hover:text-brand-red hover:bg-rose-50'
-                    }`}
-                  >
-                    <Briefcase className={`w-3.5 h-3.5 ${adminSubTab === 'overview' ? 'text-white' : 'text-brand-red'}`} />
-                    <span>Overzicht</span>
-                  </button>
-                  <button
-                    onClick={() => setAdminSubTab('files')}
-                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 focus:outline-hidden ${
-                      adminSubTab === 'files'
-                        ? 'bg-brand-red text-white shadow-sm font-extrabold'
-                        : 'text-slate-500 hover:text-brand-red hover:bg-rose-50'
-                    }`}
-                  >
-                    <FolderOpen className={`w-3.5 h-3.5 font-bold ${adminSubTab === 'files' ? 'text-white' : 'text-amber-500'}`} />
-                    <span>Bestanden</span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${adminSubTab === 'files' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
-                      {parsedFilesList.length}
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => setAdminSubTab('orders')}
-                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 focus:outline-hidden ${
-                      adminSubTab === 'orders'
-                        ? 'bg-brand-red text-white shadow-sm font-extrabold'
-                        : 'text-slate-500 hover:text-brand-red hover:bg-rose-50'
-                    }`}
-                  >
-                    <Briefcase className={`w-3.5 h-3.5 ${adminSubTab === 'orders' ? 'text-white' : 'text-brand-red'}`} />
-                    <span>Opdrachten</span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${adminSubTab === 'orders' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
-                      {orders.length}
-                    </span>
-                  </button>
-                  {isOwner && <button
-                    onClick={() => {
-                      setAdminSubTab('staff');
-                      fetchAdminStaff();
-                    }}
-                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 focus:outline-hidden ${
-                      adminSubTab === 'staff'
-                        ? 'bg-brand-red text-white shadow-sm font-extrabold'
-                        : 'text-slate-500 hover:text-brand-red hover:bg-rose-50'
-                    }`}
-                  >
-                    <Users className={`w-3.5 h-3.5 ${adminSubTab === 'staff' ? 'text-white' : 'text-emerald-550'}`} />
-                    <span>Personeel</span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${adminSubTab === 'staff' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
-                      {staffList.length}
-                    </span>
-                  </button>}
-                  {can('bon_maken') && <button
-                    onClick={() => {
-                      setAdminSubTab('create_order');
-                      setManualCreatedOrder(null);
-                    }}
-                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 focus:outline-hidden ${
-                      adminSubTab === 'create_order'
-                        ? 'bg-brand-red text-white shadow-sm font-extrabold'
-                        : 'text-slate-500 hover:text-brand-red hover:bg-rose-50 border border-transparent hover:border-rose-100'
-                    }`}
-                  >
-                    <PlusCircle className={`w-3.5 h-3.5 ${adminSubTab === 'create_order' ? 'text-white' : 'text-brand-red'}`} />
-                    <span className="font-bold">Opdrachtbon</span>
-                  </button>}
+                {/* Backoffice hoofdmenu: grote knoppen, geschikt voor touchscreen/tablet */}
+                <div className="grid grid-cols-2 gap-3 select-none font-sans sm:grid-cols-3 lg:grid-cols-5">
+                  {([
+                    { key: 'overview', label: 'Overzicht', icon: Grid, big: false, show: true, count: null as number | null, onSelect: () => setAdminSubTab('overview') },
+                    { key: 'orders', label: 'Opdrachten', icon: Briefcase, big: true, show: true, count: orders.filter((o) => (o.status || 'Ingediend') !== 'Verzonden').length, onSelect: () => setAdminSubTab('orders') },
+                    { key: 'create_order', label: 'Opdrachtbon', icon: PlusCircle, big: true, show: can('bon_maken'), count: null, onSelect: () => { setAdminSubTab('create_order'); setManualCreatedOrder(null); } },
+                    { key: 'files', label: 'Bestanden', icon: FolderOpen, big: false, show: true, count: parsedFilesList.length, onSelect: () => setAdminSubTab('files') },
+                    { key: 'staff', label: 'Personeel', icon: Users, big: false, show: isOwner, count: staffList.length, onSelect: () => { setAdminSubTab('staff'); fetchAdminStaff(); } },
+                  ]).filter((tab) => tab.show).map((tab) => {
+                    const active = adminSubTab === tab.key;
+                    const Icon = tab.icon;
+                    return (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        onClick={tab.onSelect}
+                        className={`flex items-center justify-center gap-2.5 rounded-2xl border px-4 font-extrabold shadow-sm transition-all focus:outline-hidden active:scale-[0.98] ${
+                          tab.big ? 'min-h-[68px] text-base' : 'min-h-[56px] text-sm'
+                        } ${
+                          active
+                            ? 'border-brand-red bg-brand-red text-white'
+                            : tab.big
+                              ? 'border-rose-200 bg-white text-slate-900 hover:bg-rose-50'
+                              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        <Icon className={`${tab.big ? 'h-6 w-6' : 'h-5 w-5'} ${active ? 'text-white' : 'text-brand-red'}`} />
+                        <span>{tab.label}</span>
+                        {tab.count !== null && (
+                          <span className={`rounded-full px-2 py-0.5 font-mono text-xs font-bold ${active ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-600'}`}>{tab.count}</span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {adminSubTab === 'overview' ? (
@@ -3285,6 +3266,7 @@ export default function App() {
                       onOpenOrder={(order) => {
                         setSearchQuery(String(order.id || order.order_number || ''));
                         setAdminCategoryFilter('All');
+                        setOrderView('alle');
                         setAdminSubTab('orders');
                         fetchAdminOrders();
                       }}
@@ -3630,6 +3612,27 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Snelfilters: wat loopt er en wat moet er gebeuren */}
+                <div className="flex flex-wrap gap-2 select-none font-sans">
+                  {([
+                    ['lopend', 'Lopend'],
+                    ['actie', 'Actie nodig'],
+                    ['klaar', 'Klaar voor afhalen'],
+                    ['onbetaald', 'Onbetaald'],
+                    ['afgerond', 'Afgerond'],
+                    ['alle', 'Alles'],
+                  ] as Array<[OrderView, string]>).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setOrderView(key)}
+                      className={`min-h-[48px] rounded-xl border px-4 text-sm font-extrabold transition-all active:scale-[0.98] ${orderView === key ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+                    >
+                      {label} <span className={`ml-1 rounded-full px-2 py-0.5 font-mono text-xs ${orderView === key ? 'bg-white/20' : 'bg-slate-100 text-slate-600'}`}>{orders.filter((o) => matchesOrderView(o, key)).length}</span>
+                    </button>
+                  ))}
+                </div>
+
                 {/* Order Cards Flow */}
                 {isLoadingOrders ? (
                   <div className="text-center py-16 space-y-3">
@@ -3653,7 +3656,10 @@ export default function App() {
                           o.id.toLowerCase().includes(sq) ||
                           (o.clientName?.toLowerCase().includes(sq) || '') ||
                           (o.clientEmail?.toLowerCase().includes(sq) || '') ||
-                          (o.clientReference?.toLowerCase().includes(sq) || '');
+                          (o.clientReference?.toLowerCase().includes(sq) || '') ||
+                          String(o.order_number || '').toLowerCase().includes(sq) ||
+                          String(o.contact_person || '').toLowerCase().includes(sq) ||
+                          String(o.clientPhone || '').toLowerCase().includes(sq);
                         
                         const matchesCategory =
                           adminCategoryFilter === 'All' ||
@@ -3661,8 +3667,9 @@ export default function App() {
 
                         const matchesBranch = branchFilter === 'Alle' || (o.branch || 'Amsterdam') === branchFilter;
 
-                        return matchesSearch && matchesCategory && matchesBranch;
+                        return matchesSearch && matchesCategory && matchesBranch && (sq ? true : matchesOrderView(o, orderView));
                       })
+                      .sort((a, b) => orderUrgency(a) - orderUrgency(b) || String(a.delivery_date || '9999').localeCompare(String(b.delivery_date || '9999')) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
                       .map((order) => {
                         const createDate = new Date(order.createdAt || Date.now());
                         const formattedDate = createDate.toLocaleDateString('nl-NL', {
@@ -3838,6 +3845,32 @@ export default function App() {
                                           </div>
                                           <p className="text-[10px] text-slate-400">{canManage ? 'Alleen de aangevinkte filialen kunnen deze opdracht zien.' : `Deze opdracht is door ${ownBranch} met jouw filiaal gedeeld.`}</p>
                                         </div>
+                                        <button
+                                          type="button"
+                                          disabled={savingOrderId === order.id}
+                                          onClick={async () => {
+                                            setSavingOrderId(order.id);
+                                            try {
+                                              const result = await saveOrderToComputer(order, can('bestanden'));
+                                              if (result) {
+                                                window.alert(
+                                                  result.mode === 'map'
+                                                    ? `Map "${result.folderName}" is opgeslagen met ${result.fileCount} bestand${result.fileCount === 1 ? '' : 'en'}.`
+                                                    : `"${result.folderName}.zip" is gedownload. Pak het uit om de map te krijgen.`
+                                                  + (result.failed.length ? `\n\nNiet gelukt: ${result.failed.join(', ')}` : '')
+                                                );
+                                              }
+                                            } catch (error) {
+                                              console.error('Opslaan op computer mislukt:', error);
+                                              window.alert('Opslaan op de computer is mislukt. Probeer het opnieuw.');
+                                            } finally {
+                                              setSavingOrderId(null);
+                                            }
+                                          }}
+                                          className="min-h-[48px] rounded-xl bg-emerald-700 px-4 text-sm font-extrabold text-white hover:bg-emerald-800 disabled:opacity-60"
+                                        >
+                                          {savingOrderId === order.id ? 'Bezig met opslaan…' : '💾 Opslaan op computer'}
+                                        </button>
                                         {order.order_type === 'opdrachtbon' && canManage && can('bon_aanpassen') && (
                                           <button type="button" onClick={() => setEditingOrder(order)} className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-slate-700">
                                             Bon aanpassen
@@ -4739,6 +4772,7 @@ export default function App() {
                     <OrderTicketWorkspace
                       products={STANDARD_PRODUCTS}
                       staff={staffList}
+                      fixedBranch={sessionRole === 'branch' ? sessionBranch : undefined}
                       onOrderCreated={() => fetchAdminOrders()}
                       onViewOrders={() => setAdminSubTab('orders')}
                     />

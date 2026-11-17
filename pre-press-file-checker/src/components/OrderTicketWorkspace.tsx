@@ -1,3 +1,4 @@
+import { BRANCH_DETAILS } from '../utils/branches';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { Calculator, Eraser, QrCode, Paperclip, Plus, Printer, Save, Send, ShieldCheck, Trash2, X } from 'lucide-react';
@@ -69,6 +70,8 @@ interface OrderTicketWorkspaceProps {
   publicAccess?: boolean;
   /** Bestaande opdrachtbon aanpassen in het backoffice. */
   editOrder?: Record<string, any> | null;
+  /** Ingelogd als filiaal: dit filiaal staat vast en hoeft niet gekozen te worden. */
+  fixedBranch?: string;
   onEditSaved?: () => void;
   onEditCancel?: () => void;
 }
@@ -115,11 +118,6 @@ const calculatorKindFor = (line: { description: string; category: string }): 'st
 const DRAFT_STORAGE_KEY = 'fd_bon_concept_v1';
 const DRAFT_KEEP_MS = 8 * 60 * 60 * 1000;
 
-const BRANCH_DETAILS: Record<string, { address: string; phone: string; email: string }> = {
-  Amsterdam: { address: 'Bijlmerplein 375 | 1102 DK Amsterdam-Zuidoost', phone: '020 - 363 14 45', email: 'amsterdam@fdprintingcenter.nl' },
-  Utrecht: { address: 'Amsterdamsestraatweg 72 | 3513 AJ Utrecht', phone: '030 - 231 96 46', email: 'utrecht@fdprintingcenter.nl' },
-  Hoogvliet: { address: 'Rijkeeplein 20 | 3191 VD Hoogvliet', phone: '010 - 303 27 98', email: 'hoogvliet@fdprintingcenter.nl' },
-};
 
 const companyFooter = (branchName?: string): string[] => {
   const details = BRANCH_DETAILS[branchName || ''] || BRANCH_DETAILS.Amsterdam;
@@ -307,7 +305,7 @@ function PaymentBox({ title, checked, shaded, onToggle, disabled, children }: { 
 /* Hoofdcomponent                                                      */
 /* ------------------------------------------------------------------ */
 
-export default function OrderTicketWorkspace({ products, staff, onOrderCreated, onViewOrders, publicAccess = false, editOrder = null, onEditSaved, onEditCancel }: OrderTicketWorkspaceProps) {
+export default function OrderTicketWorkspace({ products, staff, onOrderCreated, onViewOrders, publicAccess = false, editOrder = null, onEditSaved, onEditCancel, fixedBranch }: OrderTicketWorkspaceProps) {
   const [ticketNumber, setTicketNumber] = useState(newTicketNumber);
   const [customerName, setCustomerName] = useState('');
   const [contactPerson, setContactPerson] = useState('');
@@ -405,7 +403,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   };
 
   // Medewerkers van het gekozen filiaal voor "Geholpen door".
-  const staffBranch = editOrder ? String(editOrder.branch || 'Amsterdam') : branch;
+  const staffBranch = editOrder ? String(editOrder.branch || 'Amsterdam') : fixedBranch || branch;
   useEffect(() => {
     if (!staffBranch) {
       setBranchStaff([]);
@@ -1273,7 +1271,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 <FieldRow label="Bon nummer:">
                   <ReadValue><span className="font-mono text-xs">{ticketNumber}</span></ReadValue>
                 </FieldRow>
-                {!editOrder && (
+                {!editOrder && !fixedBranch && (
                   <FieldRow label="Filiaal:" htmlFor="ticket-branch">
                     <select id="ticket-branch" required={publicAccess} value={branch} onChange={(event) => chooseBranch(event.target.value)} className={lineInput}>
                       <option value="">— kies filiaal —</option>
