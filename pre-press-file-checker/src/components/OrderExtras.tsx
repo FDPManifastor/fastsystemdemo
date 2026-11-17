@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { FileThumb, getUploadFileType, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, readFileAsDataUrl } from './ticket/TicketTools';
 import { formatWhen, helpRequestsOf, orderProgress, type AnyOrder } from '../utils/orderProgress';
+
+const ImpositionModal = lazy(() => import('./ImpositionModal'));
 
 type Act = (body: Record<string, unknown>) => Promise<boolean>;
 
@@ -200,7 +202,7 @@ export function ExtraSpecBox({ order, me, canEdit, canFiles, act, onChanged }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-  const files: AnyOrder[] = Array.isArray(order.extraFiles) ? order.extraFiles : [];
+  const files: AnyOrder[] = (Array.isArray(order.extraFiles) ? order.extraFiles : []).filter((file: AnyOrder) => !file.printReady);
 
   // Nieuwe versie van de server overschrijft alleen als je niet zelf aan het typen bent.
   useEffect(() => { if (!dirty) setText(saved); }, [saved, dirty]);
@@ -330,6 +332,113 @@ export function MyHelpBanner({ orders, me, onOpenOrder, act }: { orders: AnyOrde
           </li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+const toBase64 = (bytes: Uint8Array) => {
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return btoa(binary);
+};
+
+/** Ingeslagen vellen die klaar zijn om te printen. */
+export function PrintReadyBox({ order, canFiles, me, onChanged }: { order: AnyOrder; canFiles: boolean; me: string; onChanged: () => void }) {
+  const files: AnyOrder[] = (Array.isArray(order.extraFiles) ? order.extraFiles : []).filter((file: AnyOrder) => file.printReady);
+  if (files.length === 0) return null;
+  const remove = async (file: AnyOrder) => {
+    if (!window.confirm(`"${file.fileName}" verwijderen?`)) return;
+    const response = await fetch(`/api/orders/${encodeURIComponent(order.id)}/attachments/${encodeURIComponent(file.id)}${me ? `?actingAs=${encodeURIComponent(me)}` : ''}`, { method: 'DELETE', credentials: 'include' });
+    if (!response.ok) window.alert(((await response.json().catch(() => ({}))) as any).error || 'Verwijderen mislukt.');
+    onChanged();
+  };
+  return (
+    <section className="space-y-2 rounded-xl border-2 border-emerald-400 bg-emerald-50 p-3">
+      <h5 className="text-sm font-extrabold uppercase tracking-wide text-emerald-900">✓ Klaar om te printen</h5>
+      {files.map((file) => {
+        const url = `/api/orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(file.id)}`;
+        return (
+          <div key={file.id} className="space-y-2 rounded-lg bg-white p-3">
+            <div className="flex items-center gap-3">
+              <FileThumb remoteUrl={url} fileName={file.fileName} fileType={file.fileType} size={56} />
+              <div className="min-w-0 flex-1">
+                <p className="break-words text-sm font-extrabold text-slate-900">{file.fileName}</p>
+                <p className="text-[11px] text-slate-600">{file.label ? `${file.label} · ` : ''}{file.by ? `${file.by} · ` : ''}{formatWhen(file.uploadedAt)}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <a href={url} className="inline-flex min-h-[48px] items-center rounded-xl bg-emerald-700 px-5 text-sm font-extrabold text-white hover:bg-emerald-800">⬇ Downloaden en printen</a>
+              {canFiles && <button type="button" onClick={() => remove(file)} className="min-h-[48px] rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-600 hover:bg-rose-50">Verwijderen</button>}
+            </div>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+/** Bestanden van de klant: origineel downloaden of imposeren (meerdere op een vel). */
+export function CustomerFilesBox({ order, lines, me, canPrepress, onChanged }: { order: AnyOrder; lines: AnyOrder[]; me: string; canPrepress: boolean; onChanged: () => void }) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const files: AnyOrder[] = Array.isArray(order.customerFiles) ? order.customerFiles : [];
+  if (files.length === 0) return null;
+
+  const savePrintReady = async (pdf: Uint8Array, fileName: string, note: string): Promise<string | null> => {
+    if (pdf.length > 20 * 1024 * 1024) return 'Het ingeslagen bestand is groter dan 20 MB en kan niet bij de opdracht worden bewaard. Gebruik "Alleen pdf downloaden".';
+    try {
+      const response = await fetch(`/api/orders/${encodeURIComponent(order.id)}/attachments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ file: { fileName, fileType: 'application/pdf', dataUrl: `data:application/pdf;base64,${toBase64(pdf)}` }, label: note, printReady: true, actingAs: me || undefined }),
+      });
+      if (!response.ok) return ((await response.json().catch(() => ({}))) as any).error || 'Opslaan bij de opdracht is mislukt.';
+      onChanged();
+      return null;
+    } catch {
+      return 'De server is niet bereikbaar.';
+    }
+  };
+
+  return (
+    <section className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+      <h5 className="text-xs font-extrabold uppercase tracking-widest text-slate-700">Bestanden van de klant</h5>
+      {files.map((file) => {
+        const url = `/api/orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(file.id)}`;
+        const line = lines.find((item) => item.id && item.id === file.productLineId);
+        return (
+          <div key={file.id} className="space-y-3 rounded-lg bg-white p-3">
+            <div className="flex items-center gap-3">
+              <FileThumb remoteUrl={url} fileName={file.fileName} fileType={file.fileType} size={56} />
+              <div className="min-w-0 flex-1">
+                <p className="break-words text-sm font-extrabold text-slate-900" title={file.fileName}>{file.fileName}</p>
+                <p className="text-[11px] text-slate-500">
+                  {file.productName ? `${file.productName} · ${file.productQuantity} stuks` : file.side === 'back' ? 'Achterzijde' : 'Voorzijde'} · {(file.size / (1024 * 1024)).toFixed(2)} MB · {new Date(file.uploadedAt).toLocaleDateString('nl-NL')}
+                </p>
+              </div>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <a href={url} className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-extrabold text-slate-800 hover:bg-slate-50">⬇ Origineel downloaden</a>
+              <button type="button" disabled={!canPrepress} onClick={() => setOpenId(file.id)} className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-[#e31c24] px-4 text-sm font-extrabold text-white hover:bg-[#b8141a] disabled:opacity-50">🧩 Imposeren (SRA3)</button>
+            </div>
+            {!canPrepress && <p className="text-[11px] text-slate-500">Imposeren mag alleen met het recht “Pre-press”. Vraag de beheerder.</p>}
+            {openId === file.id && (
+              <Suspense fallback={null}>
+                <ImpositionModal
+                  fileUrl={url}
+                  fileName={file.fileName}
+                  fileType={file.fileType}
+                  productName={file.productName || order.selectedProductName}
+                  defaultWidthMm={Number(line?.widthMm || order.customWidth) || undefined}
+                  defaultHeightMm={Number(line?.heightMm || order.customHeight) || undefined}
+                  onPrintReady={savePrintReady}
+                  onClose={() => setOpenId(null)}
+                />
+              </Suspense>
+            )}
+          </div>
+        );
+      })}
     </section>
   );
 }

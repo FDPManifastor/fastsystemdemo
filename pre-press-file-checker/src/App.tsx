@@ -46,13 +46,12 @@ import LiveFilePreview from './components/LiveFilePreview';
 import { FDLogo } from './components/FDLogo';
 import { renderPdfFile } from './utils/pdfLoader';
 // Zware onderdelen worden pas geladen als ze nodig zijn, zodat de eerste pagina sneller opent.
-import { HelpRequestBox, ExtraSpecBox, MyHelpBanner, ProgressMini, ProgressPanel, WhoBadge } from './components/OrderExtras';
+import { CustomerFilesBox, PrintReadyBox, HelpRequestBox, ExtraSpecBox, MyHelpBanner, ProgressMini, ProgressPanel, WhoBadge } from './components/OrderExtras';
 const OrderTicketWorkspace = lazy(() => import('./components/OrderTicketWorkspace'));
 import { saveOrderToComputer } from './utils/saveOrderFolder';
 import { BRANCH_DETAILS } from './utils/branches';
 const BackofficeOverview = lazy(() => import('./components/BackofficeOverview'));
 const TicketProductUploadPortal = lazy(() => import('./components/TicketProductUploadPortal'));
-const ImpositionModal = lazy(() => import('./components/ImpositionModal'));
 const lazyFallback = <div className="p-6 text-center text-sm text-slate-500" role="status">Laden…</div>;
 import { FileThumb } from './components/ticket/TicketTools';
 
@@ -373,38 +372,6 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
   const [adminAuthError, setAdminAuthError] = useState<string | null>(null);
   const [trackingQrCode, setTrackingQrCode] = useState<string>('');
   const [orders, setOrders] = useState<any[]>([]);
-  const [impositionFileId, setImpositionFileId] = useState<string | null>(null);
-  const [quickCropMarks, setQuickCropMarks] = useState(true);
-  const [quickImposeBusyId, setQuickImposeBusyId] = useState<string | null>(null);
-
-  /** Direct inslaan zonder venster: SRA3 vol, of bij posters op posterformaat; snijranden naar keuze. */
-  const quickImpose = async (fileUrl: string, file: { id: string; fileName: string; fileType: string }, widthMm?: number, heightMm?: number) => {
-    if (!widthMm || !heightMm) {
-      window.alert('Het eindformaat van dit product ontbreekt. Gebruik "Inslaan" en vul het formaat in.');
-      return;
-    }
-    setQuickImposeBusyId(file.id);
-    try {
-      const response = await fetch(fileUrl, { credentials: 'include' });
-      if (!response.ok) throw new Error('Het originele bestand kon niet worden opgehaald.');
-      const { autoImposeSettings, buildImposedPdf } = await import('./utils/imposition');
-      const settings = autoImposeSettings(widthMm, heightMm, 2, quickCropMarks);
-      const result = await buildImposedPdf(new Uint8Array(await response.arrayBuffer()), file.fileType, settings);
-      const url = URL.createObjectURL(new Blob([result as unknown as BlobPart], { type: 'application/pdf' }));
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${file.fileName.replace(/\.[^.]+$/, '')}_${settings.columns * settings.rows}-op_${settings.sheetWidthMm}x${settings.sheetHeightMm}mm.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
-    } catch (reason) {
-      console.error('Direct inslaan mislukt:', reason);
-      window.alert(reason instanceof Error ? reason.message : 'Het inslaan is mislukt.');
-    } finally {
-      setQuickImposeBusyId(null);
-    }
-  };
   const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [adminCategoryFilter, setAdminCategoryFilter] = useState<string>('All');
@@ -4296,68 +4263,8 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
 
                               {/* Right Column: Preflight Downloads and Render Canvas */}
                               <div className="lg:col-span-4 space-y-4 font-sans">
-                                {Array.isArray(order.customerFiles) && order.customerFiles.length > 0 && can('bestanden') && (
-                                  <section className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                                    <h5 className="text-xs font-extrabold uppercase tracking-widest text-emerald-900">
-                                      Door klant aangeleverde bestanden
-                                    </h5>
-                                    {order.customerFiles.map((file: any) => {
-                                      const fileUrl = `/api/orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(file.id)}`;
-                                      const fileLine = ticketLines.find((line) => line.id && line.id === file.productLineId);
-                                      return (
-                                      <div key={file.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-white p-2.5">
-                                        <FileThumb remoteUrl={fileUrl} fileName={file.fileName} fileType={file.fileType} size={48} />
-                                        <div className="min-w-0 flex-1">
-                                          <p className="truncate text-[11px] font-bold text-slate-800" title={file.fileName}>{file.fileName}</p>
-                                          <p className="text-[9px] text-slate-500">
-                                            {file.productName
-                                              ? `${file.productName} · ${file.productQuantity} stuks`
-                                              : file.side === 'back' ? 'Achterzijde' : 'Voorzijde'} · {(file.size / (1024 * 1024)).toFixed(2)} MB · {new Date(file.uploadedAt).toLocaleDateString('nl-NL')}
-                                          </p>
-                                        </div>
-                                        <div className="flex shrink-0 gap-2">
-                                          <a
-                                            href={fileUrl}
-                                            className="rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-emerald-800"
-                                          >
-                                            Downloaden
-                                          </a>
-                                          <label className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
-                                            <input type="checkbox" checked={quickCropMarks} onChange={(event) => setQuickCropMarks(event.target.checked)} className="h-3.5 w-3.5 accent-[#e31c24]" /> Snijranden
-                                          </label>
-                                          <button
-                                            type="button"
-                                            disabled={quickImposeBusyId === file.id || !can('prepress')}
-                                            onClick={() => quickImpose(fileUrl, file, Number(fileLine?.widthMm || order.customWidth) || undefined, Number(fileLine?.heightMm || order.customHeight) || undefined)}
-                                            className="rounded-lg bg-[#e31c24] px-3 py-2 text-[10px] font-bold text-white hover:bg-[#b8141a] disabled:opacity-50"
-                                          >
-                                            {quickImposeBusyId === file.id ? 'Bezig…' : 'Direct inslaan (SRA3/poster)'}
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => setImpositionFileId(file.id)}
-                                            disabled={!can('prepress')}
-                                            className="rounded-lg bg-slate-900 px-3 py-2 text-[10px] font-bold text-white hover:bg-slate-700 disabled:opacity-50"
-                                          >
-                                            Inslaan
-                                          </button>
-                                        </div>
-                                        {impositionFileId === file.id && (
-                                          <Suspense fallback={lazyFallback}><ImpositionModal
-                                            fileUrl={fileUrl}
-                                            fileName={file.fileName}
-                                            fileType={file.fileType}
-                                            productName={file.productName}
-                                            defaultWidthMm={Number(fileLine?.widthMm || order.customWidth) || undefined}
-                                            defaultHeightMm={Number(fileLine?.heightMm || order.customHeight) || undefined}
-                                            onClose={() => setImpositionFileId(null)}
-                                          /></Suspense>
-                                        )}
-                                      </div>
-                                      );
-                                    })}
-                                  </section>
-                                )}
+                                {can('bestanden') && <PrintReadyBox order={order} canFiles={can('bestanden')} me={sessionRole === 'branch' ? currentPerson : ''} onChanged={fetchAdminOrders} />}
+                                {can('bestanden') && <CustomerFilesBox order={order} lines={ticketLines} me={sessionRole === 'branch' ? currentPerson : ''} canPrepress={can('prepress')} onChanged={fetchAdminOrders} />}
 
                                 <h5 className="text-xs font-extrabold uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
                                   <Download className="w-3.5 h-3.5 text-slate-400" /> Print-Ready Bestanden

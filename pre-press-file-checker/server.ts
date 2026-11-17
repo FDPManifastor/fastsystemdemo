@@ -846,6 +846,7 @@ async function startServer() {
     const file = validateCustomerFile(req.body?.file);
     if (!file) return res.status(400).json({ error: "Upload een geldig PDF-, PNG- of JPG-bestand van maximaal 20 MB." });
     const label = typeof req.body?.label === "string" ? req.body.label.trim().slice(0, 200) : "";
+    const printReady = req.body?.printReady === true;
     const actor = await resolveActor(info, req.body?.actingAs);
     let limitReached = false;
     const updated = await storage.updateOrder(req.params.id, (order) => {
@@ -853,9 +854,14 @@ async function startServer() {
       if (existing.length >= 30) { limitReached = true; return false; }
       const fileId = crypto.randomBytes(12).toString("hex");
       const uploadedAt = new Date().toISOString();
-      (order as any).extraFiles = [...existing, { id: fileId, fileName: file.fileName, fileType: file.fileType, size: file.size, label, by: actor, uploadedAt }];
+      (order as any).extraFiles = [...existing, { id: fileId, fileName: file.fileName, fileType: file.fileType, size: file.size, label, by: actor, uploadedAt, ...(printReady ? { printReady: true } : {}) }];
       order.history = Array.isArray(order.history) ? order.history : [];
-      order.history.push({ date: uploadedAt, status: order.status || "Ingediend", note: `Extra bijlage toegevoegd: ${file.fileName}${label ? ` (${label})` : ""}.`, internal: true, by: actor } as any);
+      order.history.push({ date: uploadedAt, status: order.status || "Ingediend", note: printReady ? `Bestand klaar om te printen: ${file.fileName}${label ? ` (${label})` : ""}.` : `Extra bijlage toegevoegd: ${file.fileName}${label ? ` (${label})` : ""}.`, internal: true, by: actor } as any);
+      // Klaar om te printen = bestand is in orde: een nog niet goedgekeurde opdracht gaat naar "Preflight Goedgekeurd".
+      if (printReady && ["Ingediend", "Bestanden Ontvangen", "In Controle", "Actie Vereist"].includes(order.status || "Ingediend")) {
+        order.status = "Preflight Goedgekeurd";
+        order.history.push({ date: uploadedAt, status: "Preflight Goedgekeurd", note: "Uw bestand is gecontroleerd en klaar om te printen.", by: actor } as any);
+      }
       const newFile: NewFile = { id: fileId, fileName: file.fileName, fileType: file.fileType, dataUrl: file.dataUrl };
       return { addFiles: [newFile] };
     });
