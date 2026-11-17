@@ -379,7 +379,7 @@ export default function App() {
   const [staffList, setStaffList] = useState<any[]>([]);
   const [isLoadingStaff, setIsLoadingStaff] = useState<boolean>(false);
   const [staffNameInput, setStaffNameInput] = useState<string>("");
-  const [staffRoleInput, setStaffRoleInput] = useState<string>("");
+  const [staffRoleInput, setStaffRoleInput] = useState<string>("Pre-press Operator");
   const [staffError, setStaffError] = useState<string | null>(null);
 
   // Admin Manual Order Creation states
