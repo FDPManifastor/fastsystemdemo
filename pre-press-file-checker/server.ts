@@ -161,6 +161,7 @@ type StaffPermission = (typeof STAFF_PERMISSIONS)[number];
 type SessionInfo = { sessionId: string; role: "admin" | "branch"; branch: string; staffId?: string; staffName?: string; perms: StaffPermission[] | null };
 /** Beheerder en filiaal-login (zonder eigen medewerkersaccount) hebben alle rechten; een persoonlijke login alleen de aangevinkte. */
 const hasPerm = (info: SessionInfo, perm: StaffPermission) => info.role === "admin" || info.perms === null || info.perms.includes(perm);
+const actorName = (info: SessionInfo) => (info.role === "admin" ? "Beheerder" : info.staffName || `Filiaal ${info.branch}`);
 const denyPerm = (res: express.Response) => res.status(403).json({ error: "U heeft hier geen rechten voor. Vraag de beheerder." });
 const parsePerms = (raw: string | null): StaffPermission[] => {
   try {
@@ -273,7 +274,7 @@ async function startServer() {
       if (field in order) result[field] = order[field];
     });
     // Interne notities (wie werkt eraan, delen, verplaatsen, aanpassen) zijn niet voor de klant.
-    if (Array.isArray(order.history)) result.history = order.history.filter((entry: any) => !entry?.internal);
+    if (Array.isArray(order.history)) result.history = order.history.filter((entry: any) => !entry?.internal).map(({ by: _by, ...entry }: any) => entry);
     const customerFiles = (Array.isArray(order.customerFiles) ? order.customerFiles : [])
       .filter((file: any) => !productUpload || file.productLineId === productUpload.id);
     result.customerFiles = customerFiles.map((file: any) => ({
@@ -928,6 +929,7 @@ async function startServer() {
     const updated = await storage.updateOrder(req.params.id, (order) => {
       const oldStatus = order.status || "Ingediend";
       order.history = Array.isArray(order.history) ? order.history : [];
+      const historyStart = order.history.length;
       if (status) {
         order.status = status;
         order.history.push({
@@ -1006,6 +1008,8 @@ async function startServer() {
           internal: true
         });
       }
+      // Wie deed het? Alleen zichtbaar in de backoffice, nooit voor de klant.
+      for (let index = historyStart; index < order.history.length; index += 1) (order.history[index] as any).by = actorName(info);
     });
 
     if (!updated) {

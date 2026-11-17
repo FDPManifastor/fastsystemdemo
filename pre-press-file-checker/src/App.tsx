@@ -175,18 +175,30 @@ export default function App() {
   const [prototypeOverride, setPrototypeOverride] = useState<PrototypeStateOverride>('auto');
 
   // New Full-Stack Backoffice & Customer Details states
-  const [activePortal, setActivePortal] = useState<'landing' | 'client' | 'admin' | 'ticket'>('landing');
+  type PortalName = 'landing' | 'client' | 'admin' | 'ticket';
+  const PORTAL_PATHS: Record<PortalName, string> = { landing: '/', client: '/klantportal', admin: '/backoffice', ticket: '/opdrachtbon' };
+  const portalFromPath = (): PortalName => {
+    const path = window.location.pathname.replace(/\/+$/, '') || '/';
+    if (path === '/orders' || path === '/backoffice') return 'admin';
+    if (path === '/klantportal') return 'client';
+    if (path === '/opdrachtbon') return 'ticket';
+    return 'landing';
+  };
+  // De pagina staat in de adresbalk: verversen blijft op dezelfde pagina en terug-knop werkt.
+  const [activePortal, setActivePortal] = useState<PortalName>(portalFromPath);
   useEffect(() => {
-    setActivePortal(() =>
-    isOrdersRoute
-      ? 'admin'
-      : window.location.pathname.replace(/\/+$/, '') === '/klantportal'
-        ? 'client'
-        : 'landing'
-    );
-  }, [isOrdersRoute]);
+    const wanted = PORTAL_PATHS[activePortal];
+    const current = window.location.pathname.replace(/\/+$/, '') || '/';
+    if (current !== wanted && !(activePortal === 'admin' && current === '/orders')) {
+      window.history.pushState({}, '', wanted + (activePortal === 'client' ? window.location.search : ''));
+    }
+  }, [activePortal]);
+  useEffect(() => {
+    const onPop = () => setActivePortal(portalFromPath());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
   const enterClientPortal = () => {
-    window.history.replaceState({}, '', '/klantportal');
     setActivePortal('client');
   };
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(false);
@@ -259,7 +271,16 @@ export default function App() {
   const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [adminCategoryFilter, setAdminCategoryFilter] = useState<string>('All');
-  const [adminSubTab, setAdminSubTab] = useState<'files' | 'orders' | 'staff' | 'create_order'>('files');
+  const [adminSubTab, setAdminSubTabState] = useState<'files' | 'orders' | 'staff' | 'create_order'>(() => {
+    try {
+      const saved = window.sessionStorage.getItem('fd_admin_tab');
+      return saved === 'orders' || saved === 'staff' || saved === 'create_order' || saved === 'files' ? saved : 'files';
+    } catch { return 'files'; }
+  });
+  const setAdminSubTab = (tab: 'files' | 'orders' | 'staff' | 'create_order') => {
+    setAdminSubTabState(tab);
+    try { window.sessionStorage.setItem('fd_admin_tab', tab); } catch { /* geen opslag */ }
+  };
   const [selectedFileKeys, setSelectedFileKeys] = useState<string[]>([]);
   const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(() => new Set());
   const [uploadQrKey, setUploadQrKey] = useState<string | null>(null);
@@ -3920,6 +3941,21 @@ export default function App() {
                                       <div className="text-[10px] text-amber-805 bg-amber-50 px-2 py-1.5 rounded-lg border border-amber-100 mt-2 block w-full text-center animate-pulse">
                                         ⚠ Nog niemand aan toegewezen
                                       </div>
+                                    )}
+                                    {Array.isArray(order.history) && order.history.length > 0 && (
+                                      <details className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                                        <summary className="cursor-pointer text-[10px] font-extrabold uppercase text-slate-500">Logboek ({order.history.length})</summary>
+                                        <ul className="mt-2 space-y-1.5">
+                                          {[...order.history].reverse().map((entry: any, index: number) => (
+                                            <li key={index} className="text-[10px] leading-snug text-slate-700">
+                                              <span className="font-mono text-slate-400">{new Date(entry.date).toLocaleString('nl-NL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                                              {entry.by ? <strong> · {entry.by}</strong> : null}
+                                              {' — '}{entry.note || entry.status}
+                                              {entry.internal ? <em className="text-slate-400"> (intern)</em> : null}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </details>
                                     )}
                                   </div>
                                 </div>
