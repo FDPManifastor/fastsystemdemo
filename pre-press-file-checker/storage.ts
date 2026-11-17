@@ -35,6 +35,7 @@ export interface Storage {
   listStaff(): Promise<StaffMember[]>;
   addStaff(member: StaffMember): Promise<void>;
   deleteStaff(id: string): Promise<void>;
+  updateStaffBranch(id: string, branch: string): Promise<void>;
   createSession(sessionId: string, expiresAt: number): Promise<void>;
   /** Geeft true als de sessie geldig is en verlengt hem dan tot `newExpiresAt`. */
   touchSession(sessionId: string, newExpiresAt: number): Promise<boolean>;
@@ -317,6 +318,10 @@ class PostgresStorage implements Storage {
     await this.pool.query("DELETE FROM staff WHERE id = $1", [id]);
   }
 
+  async updateStaffBranch(id: string, branch: string) {
+    await this.pool.query("UPDATE staff SET branch = $2 WHERE id = $1", [id, branch]);
+  }
+
   async createSession(sessionId: string, expiresAt: number) {
     await this.pool.query("INSERT INTO admin_sessions (id_hash, expires_at) VALUES ($1, $2)", [
       hashSessionId(sessionId),
@@ -485,6 +490,14 @@ class LocalFileStorage implements Storage {
   deleteStaff(id: string) {
     return this.serial(() => {
       this.data.staff = this.data.staff.filter((member) => member.id !== id);
+      this.persist();
+    });
+  }
+
+  updateStaffBranch(id: string, branch: string) {
+    return this.serial(() => {
+      const member = this.data.staff.find((item) => item.id === id);
+      if (member) member.branch = branch;
       this.persist();
     });
   }

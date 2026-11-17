@@ -731,12 +731,44 @@ export default function App() {
     }, 400);
   }
 
+  const [branchPerms, setBranchPerms] = useState<Record<string, string[]>>({});
+  const toggleBranchPerm = async (branch: string, key: string, checked: boolean) => {
+    const current = branchPerms[branch] || [];
+    const next = checked ? [...current.filter((item) => item !== key), key] : current.filter((item) => item !== key);
+    setBranchPerms((all) => ({ ...all, [branch]: next }));
+    setBranchPasswordMessage('');
+    const response = await fetch(`/api/admin/branches/${encodeURIComponent(branch)}/permissions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ permissions: next }),
+    });
+    if (!response.ok) {
+      setBranchPerms((all) => ({ ...all, [branch]: current }));
+      setBranchPasswordMessage('Rechten opslaan mislukt.');
+    } else {
+      setBranchPasswordMessage(`Rechten voor ${branch} opgeslagen.`);
+    }
+  };
+  const changeStaffBranch = async (staffId: string, branch: string) => {
+    setStaffError(null);
+    const response = await fetch(`/api/admin/staff/${encodeURIComponent(staffId)}/branch`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ branch }),
+    });
+    if (response.ok) fetchAdminStaff();
+    else setStaffError('Filiaal wijzigen mislukt.');
+  };
+
   const fetchBranchPasswords = async () => {
     try {
       const response = await fetch('/api/admin/branches', { credentials: 'include' });
       if (!response.ok) return;
       const data = await response.json();
       setBranchPasswordSet(Object.fromEntries((data.branches || []).map((entry: any) => [entry.branch, Boolean(entry.passwordSet)])));
+      setBranchPerms(Object.fromEntries((data.branches || []).map((entry: any) => [entry.branch, Array.isArray(entry.permissions) ? entry.permissions : []])));
     } catch {
       // Alleen de beheerder kan dit zien.
     }
@@ -4499,8 +4531,8 @@ export default function App() {
                     {isOwner && (
                       <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-white p-4 text-left">
                         <div>
-                          <h4 className="text-xs font-extrabold text-slate-900">Wachtwoorden per filiaal</h4>
-                          <p className="text-[11px] text-slate-500">Een filiaal logt in met zijn eigen wachtwoord en ziet alleen de eigen opdrachten en de opdrachten die met dat filiaal zijn gedeeld. Jij ziet als beheerder alles.</p>
+                          <h4 className="text-xs font-extrabold text-slate-900">Filialen: wachtwoord en rechten</h4>
+                          <p className="text-[11px] text-slate-500">Een filiaal logt in met zijn eigen wachtwoord en ziet alleen de eigen opdrachten en de opdrachten die met dat filiaal zijn gedeeld. Vink aan wat een filiaal mag; wijzigingen gelden direct. Jij ziet als beheerder alles.</p>
                         </div>
                         <div className="grid gap-3 md:grid-cols-3">
                           {BRANCHES.map((branch) => (
@@ -4509,6 +4541,14 @@ export default function App() {
                                 <span>{branch}</span>
                                 <span className={branchPasswordSet[branch] ? 'text-emerald-700' : 'text-amber-700'}>{branchPasswordSet[branch] ? 'ingesteld' : 'nog niet ingesteld'}</span>
                               </label>
+                              <div className="space-y-1 pb-1">
+                                {PERMISSION_LABELS.map(([key, label]) => (
+                                  <label key={key} className="flex items-center gap-1.5 text-[11px] font-semibold normal-case text-slate-700">
+                                    <input type="checkbox" checked={(branchPerms[branch] || []).includes(key)} onChange={(e) => toggleBranchPerm(branch, key, e.target.checked)} />
+                                    {label}
+                                  </label>
+                                ))}
+                              </div>
                               <div className="flex gap-1">
                                 <input
                                   type="password"
@@ -4607,7 +4647,14 @@ export default function App() {
                                     </div>
                                     {st.name}
                                   </td>
-                                  <td className="py-3 px-4 text-[11px] font-semibold text-slate-700">{st.branch || '—'}</td>
+                                  <td className="py-3 px-4 text-[11px] font-semibold text-slate-700">
+                                    {isOwner ? (
+                                      <select value={st.branch || ''} onChange={(e) => changeStaffBranch(st.id, e.target.value)} className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold">
+                                        {!st.branch && <option value="">— kies —</option>}
+                                        {BRANCHES.map((name) => <option key={name} value={name}>{name}</option>)}
+                                      </select>
+                                    ) : (st.branch || '—')}
+                                  </td>
                                   <td className="py-3 px-4">
                                     <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-105 text-slate-700 max-w-fit border">
                                       {st.role}

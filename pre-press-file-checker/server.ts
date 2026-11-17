@@ -205,7 +205,7 @@ async function getSessionInfo(req: express.Request): Promise<SessionInfo | null>
   const sessionId = await getAdminSession(req);
   if (!sessionId) return null;
   const raw = await storage.getMeta(sessionRoleKey(sessionId));
-  if (raw && raw.startsWith("branch:") && isBranch(raw.slice(7))) return { sessionId, role: "branch", branch: raw.slice(7), perms: null };
+  if (raw && raw.startsWith("branch:") && isBranch(raw.slice(7))) return { sessionId, role: "branch", branch: raw.slice(7), perms: parsePerms(await storage.getMeta(`branchperm:${raw.slice(7)}`)) };
   if (raw && raw.startsWith("staff:")) {
     const staffId = raw.slice(6);
     const member = (await storage.listStaff()).find((item) => item.id === staffId);
@@ -758,8 +758,27 @@ async function startServer() {
   }));
 
   app.get("/api/admin/branches", requireAdmin, asyncRoute(async (req, res) => {
-    const branches = await Promise.all(BRANCHES.map(async (branch) => ({ branch, passwordSet: Boolean(await storage.getMeta(`branchpw:${branch}`)) })));
+    const branches = await Promise.all(BRANCHES.map(async (branch) => ({ branch, passwordSet: Boolean(await storage.getMeta(`branchpw:${branch}`)), permissions: parsePerms(await storage.getMeta(`branchperm:${branch}`)) })));
     res.json({ branches });
+  }));
+
+  app.put("/api/admin/branches/:branch/permissions", requireAdmin, asyncRoute(async (req, res) => {
+    const branch = req.params.branch;
+    const permissions = req.body?.permissions;
+    if (!isBranch(branch)) return res.status(404).json({ error: "Onbekend filiaal." });
+    if (!Array.isArray(permissions) || !permissions.every((perm: unknown) => STAFF_PERMISSIONS.includes(perm as StaffPermission))) {
+      return res.status(400).json({ error: "Ongeldige rechten." });
+    }
+    await storage.setMeta(`branchperm:${branch}`, JSON.stringify(permissions));
+    res.json({ success: true });
+  }));
+
+  app.put("/api/admin/staff/:id/branch", requireAdmin, asyncRoute(async (req, res) => {
+    const branch = req.body?.branch;
+    if (!isBranch(branch)) return res.status(400).json({ error: "Kies een filiaal." });
+    if (!(await storage.listStaff()).some((member) => member.id === req.params.id)) return res.status(404).json({ error: "Medewerker niet gevonden." });
+    await storage.updateStaffBranch(req.params.id, branch);
+    res.json({ success: true });
   }));
 
   app.put("/api/admin/branches/:branch/password", requireAdmin, asyncRoute(async (req, res) => {
