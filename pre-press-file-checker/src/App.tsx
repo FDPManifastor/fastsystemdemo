@@ -212,7 +212,10 @@ export default function App() {
   const [sessionPerms, setSessionPerms] = useState<string[]>([]);
   const [sessionStaffName, setSessionStaffName] = useState('');
   const [loginStaffId, setLoginStaffId] = useState('');
-  const [loginMembers, setLoginMembers] = useState<Array<{ id: string; name: string }>>([]);
+  const [loginMembers, setLoginMembers] = useState<Array<{ id: string; name: string; branch?: string }>>([]);
+  useEffect(() => {
+    fetch('/api/public/staff-login').then((r) => r.json()).then((d) => setLoginMembers(Array.isArray(d.members) ? d.members : [])).catch(() => {});
+  }, []);
   const [staffAccess, setStaffAccess] = useState<Record<string, { permissions: string[]; passwordSet: boolean }>>({});
   const [accessDraft, setAccessDraft] = useState<Record<string, string[]>>({});
   const [accessPassword, setAccessPassword] = useState<Record<string, string>>({});
@@ -932,7 +935,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ password: adminPasswordInput, ...(loginStaffId ? { staffId: loginStaffId } : loginBranch ? { branch: loginBranch } : {}) })
+        body: JSON.stringify({ password: adminPasswordInput, ...(loginStaffId ? { staffId: loginStaffId } : {}) })
       });
       if (!response.ok) {
         const failure = await response.json().catch(() => ({}));
@@ -3081,37 +3084,26 @@ export default function App() {
                   <div className="space-y-1">
                     <h3 className="text-base font-extrabold text-slate-900">Beveiligde Toegang</h3>
                     <p className="text-xs text-slate-500 leading-relaxed">
-                      Kies je filiaal (of beheerder) en voer het wachtwoord in om de opdrachten te zien.
+                      Kies je naam en vul je wachtwoord in.
                     </p>
                   </div>
                   <form onSubmit={handleAdminLogin} className="space-y-3">
                     <select
-                      value={loginBranch}
-                      onChange={(e) => {
-                        setLoginBranch(e.target.value);
-                        setLoginStaffId('');
-                        setLoginMembers([]);
-                        if (e.target.value) {
-                          fetch(`/api/public/staff?branch=${encodeURIComponent(e.target.value)}`).then((r) => r.json()).then((d) => setLoginMembers(Array.isArray(d.members) ? d.members : [])).catch(() => {});
-                        }
-                      }}
-                      aria-label="Inloggen als"
+                      value={loginStaffId}
+                      onChange={(e) => setLoginStaffId(e.target.value)}
+                      aria-label="Wie ben je"
                       className="w-full rounded-xl border border-slate-250 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-900"
                     >
-                      <option value="">Beheerder (alle filialen)</option>
-                      {BRANCHES.map((branch) => <option key={branch} value={branch}>Filiaal {branch}</option>)}
+                      <option value="">Beheerder</option>
+                      {BRANCHES.map((branch) => {
+                        const names = loginMembers.filter((member: any) => member.branch === branch);
+                        return names.length ? (
+                          <optgroup key={branch} label={branch}>
+                            {names.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                          </optgroup>
+                        ) : null;
+                      })}
                     </select>
-                    {loginBranch && loginMembers.length > 0 && (
-                      <select
-                        value={loginStaffId}
-                        onChange={(e) => setLoginStaffId(e.target.value)}
-                        aria-label="Medewerker"
-                        className="w-full rounded-xl border border-slate-250 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-900"
-                      >
-                        <option value="">Filiaalwachtwoord (zonder persoonlijke login)</option>
-                        {loginMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
-                      </select>
-                    )}
                     <div className="relative">
                       <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
                       <input
@@ -4513,7 +4505,7 @@ export default function App() {
                     </form>
                     )}
 
-                    {isOwner && (
+                    {false && (
                       <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-white p-4 text-left">
                         <div>
                           <h4 className="text-xs font-extrabold text-slate-900">Wachtwoorden per filiaal</h4>
@@ -4552,7 +4544,7 @@ export default function App() {
                       <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4 text-left space-y-4">
                         <div>
                           <h4 className="text-sm font-extrabold text-slate-900">Rechten per medewerker</h4>
-                          <p className="text-xs text-slate-500">Vink aan wat deze persoon mag. Een medewerker logt in met de eigen naam en het wachtwoord dat u hier instelt. Wie inlogt met het filiaalwachtwoord heeft alle rechten van het backoffice, maar niet die van de beheerder.</p>
+                          <p className="text-xs text-slate-500">Vink aan wat deze persoon mag. Een medewerker logt in met de eigen naam en het wachtwoord dat u hier instelt. Nieuwe medewerkers hebben standaard alle rechten van de backoffice (opdrachtbon en opdrachten). Haal een vinkje weg als iemand iets niet mag. Beheerdersonderdelen zijn nooit beschikbaar voor personeel.</p>
                         </div>
                         {staffList.map((st) => (
                           <div key={st.id} className="rounded-lg border border-slate-200 p-3 space-y-2">

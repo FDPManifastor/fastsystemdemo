@@ -164,6 +164,8 @@ const hasPerm = (info: SessionInfo, perm: StaffPermission) => info.role === "adm
 const actorName = (info: SessionInfo) => (info.role === "admin" ? "Beheerder" : info.staffName || `Filiaal ${info.branch}`);
 const denyPerm = (res: express.Response) => res.status(403).json({ error: "U heeft hier geen rechten voor. Vraag de beheerder." });
 const parsePerms = (raw: string | null): StaffPermission[] => {
+  // Nog niets ingesteld: standaard alle backoffice-rechten (opdrachtbon + opdrachten). De beheerder vinkt af wat niet mag.
+  if (!raw) return [...STAFF_PERMISSIONS];
   try {
     const list = JSON.parse(raw || "[]");
     return Array.isArray(list) ? STAFF_PERMISSIONS.filter((perm) => list.includes(perm)) : [];
@@ -681,6 +683,15 @@ async function startServer() {
     const members: Array<{ id: string; name: string }> = [];
     for (const member of inBranch) if (member.branch === branch && (await storage.getMeta(`staffpw:${member.id}`))) members.push({ id: member.id, name: member.name });
     res.json({ names: inBranch.map((member) => member.name), members });
+  }));
+
+  // Inlogkeuze: alle medewerkers met een eigen wachtwoord, per filiaal (alleen naam en filiaal).
+  app.get("/api/public/staff-login", asyncRoute(async (req, res) => {
+    const members: Array<{ id: string; name: string; branch: string }> = [];
+    for (const member of await storage.listStaff()) {
+      if (isBranch(member.branch) && (await storage.getMeta(`staffpw:${member.id}`))) members.push({ id: member.id, name: member.name, branch: member.branch });
+    }
+    res.json({ members });
   }));
 
   app.post("/api/staff", requireAdmin, asyncRoute(async (req, res) => {
