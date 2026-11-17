@@ -11,6 +11,8 @@ interface ImpositionModalProps {
   productName?: string;
   defaultWidthMm?: number;
   defaultHeightMm?: number;
+  /** Bestand komt uit de pre-press check en heeft al zoveel mm afloop rondom. */
+  sourceBleedMm?: number;
   /** Slaat het ingeslagen bestand op bij de opdracht als "klaar om te printen". Geeft een foutmelding terug als het niet lukt. */
   onPrintReady?: (pdf: Uint8Array, fileName: string, note: string) => Promise<string | null>;
   onClose: () => void;
@@ -20,7 +22,7 @@ const field = 'min-h-[44px] w-full rounded-lg border border-slate-300 bg-white p
 const label = 'block text-[11px] font-bold uppercase text-slate-500';
 
 /** Imposeren: meerdere exemplaren op één drukvel (standaard SRA3), 4 mm ruimte ertussen, met of zonder snijlijnen. */
-export default function ImpositionModal({ fileUrl, fileName, fileType, productName, defaultWidthMm, defaultHeightMm, onPrintReady, onClose }: ImpositionModalProps) {
+export default function ImpositionModal({ fileUrl, fileName, fileType, productName, defaultWidthMm, defaultHeightMm, sourceBleedMm, onPrintReady, onClose }: ImpositionModalProps) {
   const detected = detectPaperSize(productName, fileName);
   const startW = defaultWidthMm || detected?.width || 105;
   const startH = defaultHeightMm || detected?.height || 148;
@@ -32,7 +34,7 @@ export default function ImpositionModal({ fileUrl, fileName, fileType, productNa
   const [customH, setCustomH] = useState(String(Math.max(startW, startH)));
   const [sheetId, setSheetId] = useState<string>('sra3');
   const [gap, setGap] = useState(String(DEFAULT_GAP_MM));
-  const [bleed, setBleed] = useState('0');
+  const [bleed, setBleed] = useState(String(sourceBleedMm || 0));
   const [cropMarks, setCropMarks] = useState(true);
   const [manual, setManual] = useState(false);
   const [manualColumns, setManualColumns] = useState('1');
@@ -74,7 +76,7 @@ export default function ImpositionModal({ fileUrl, fileName, fileType, productNa
     const trimWidthMm = designLandscape ? Math.max(base.w, base.h) : Math.min(base.w, base.h);
     const trimHeightMm = designLandscape ? Math.min(base.w, base.h) : Math.max(base.w, base.h);
     const preset = SHEET_PRESETS.find((entry) => entry.id === sheetId) || SHEET_PRESETS[0];
-    const common = { trimWidthMm, trimHeightMm, bleedMm: number(bleed), gapMm: number(gap), cropMarks };
+    const common = { trimWidthMm, trimHeightMm, bleedMm: number(bleed), gapMm: number(gap), cropMarks, sourceBleedMm };
     const portrait = { ...common, sheetWidthMm: preset.width, sheetHeightMm: preset.height };
     const landscape = { ...common, sheetWidthMm: preset.height, sheetHeightMm: preset.width };
     if (manual) {
@@ -85,7 +87,7 @@ export default function ImpositionModal({ fileUrl, fileName, fileType, productNa
     const useLandscape = l.maxColumns * l.maxRows > p.maxColumns * p.maxRows;
     const best = useLandscape ? l : p;
     return { ...(useLandscape ? landscape : portrait), columns: Math.max(1, best.maxColumns), rows: Math.max(1, best.maxRows) };
-  }, [paperId, designLandscape, customW, customH, sheetId, gap, bleed, cropMarks, manual, manualColumns, manualRows, manualLandscape]);
+  }, [paperId, designLandscape, customW, customH, sheetId, gap, bleed, cropMarks, sourceBleedMm, manual, manualColumns, manualRows, manualLandscape]);
 
   const plan = useMemo(() => planImposition(settings), [settings]);
   const perSheet = settings.columns * settings.rows;

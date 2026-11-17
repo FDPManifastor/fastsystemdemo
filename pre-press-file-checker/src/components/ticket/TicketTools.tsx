@@ -432,6 +432,8 @@ export interface PrepressOutcome {
   note: string;
   /** Printklaar bestand (eindformaat + afloop) dat het origineel vervangt. */
   file?: File;
+  /** Afloop (mm) die rondom het printklare bestand is gezet. */
+  bleedMm?: number;
 }
 
 interface PrepressModalProps {
@@ -442,10 +444,22 @@ interface PrepressModalProps {
   heightMm: number;
   onClose: () => void;
   onDone: (outcome: PrepressOutcome) => void;
+  /** Teksten van de twee afrondknoppen. */
+  doneLabel?: string;
+  originalLabel?: string;
 }
 
 /** Pre-press check: plaatst het bestand in het productkader (bestaande preflight-weergave) en controleert formaat en resolutie. */
-export function TicketPrepressModal({ file, description, category, widthMm, heightMm, onClose, onDone }: PrepressModalProps) {
+export function TicketPrepressModal({ file, description, category, widthMm, heightMm, onClose, onDone, doneLabel, originalLabel }: PrepressModalProps) {
+  // Groot werkvlak: past zich aan het scherm aan, zodat er ruimte is om het bestand te bewerken.
+  const [viewport, setViewport] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
+  useEffect(() => {
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const canvasWidth = Math.max(420, Math.min(1300, viewport.w - 520));
+  const canvasHeight = Math.max(420, Math.min(1000, viewport.h - 220));
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [error, setError] = useState('');
   const [fitMode, setFitMode] = useState<FitMode>('fit');
@@ -557,7 +571,7 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
         return;
       }
       const name = `${file.name.replace(/\.[^.]+$/, '')}_printklaar.pdf`;
-      onDone({ ok: allOk, note: noteFor(true, bleedMm), file: new File([result as unknown as BlobPart], name, { type: 'application/pdf' }) });
+      onDone({ ok: allOk, note: noteFor(true, bleedMm), bleedMm, file: new File([result as unknown as BlobPart], name, { type: 'application/pdf' }) });
     } catch (applyError) {
       console.error('Printklaar maken mislukt:', applyError);
       setError('Het bestand kon niet op formaat worden gezet. Gebruik het origineel.');
@@ -568,7 +582,7 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
 
   return (
     <div role="dialog" aria-modal="true" aria-label={`Pre-press check voor ${description}`} className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/70 p-3 sm:p-6">
-      <div className="w-full max-w-5xl rounded-2xl bg-white shadow-2xl">
+      <div className="w-full max-w-[98vw] rounded-2xl bg-white shadow-2xl">
         <header className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
           <div className="min-w-0">
             <p className="text-[10px] font-bold uppercase tracking-widest text-[#e31c24]">Pre-press check</p>
@@ -580,7 +594,7 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
           </button>
         </header>
 
-        <div className="grid gap-4 p-4 lg:grid-cols-[1fr_18rem]">
+        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
           <div className="min-w-0">
             {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
             {!preview && !error && <div className="h-80 animate-pulse rounded-xl bg-slate-100" aria-label="Bestand wordt geladen" />}
@@ -604,6 +618,8 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
                 isPdf={preview.isPdf}
                 printSides="single"
                 activeFileName={file.name}
+                maxCanvasWidth={canvasWidth}
+                maxCanvasHeight={canvasHeight}
               />
             )}
           </div>
@@ -641,7 +657,7 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
             </label>
 
             <button type="button" disabled={!preview || busy} onClick={applyPrintReady} className="w-full rounded-lg bg-[#e31c24] px-3 py-2.5 text-xs font-bold text-white hover:bg-[#b8141a] disabled:opacity-50">
-              {busy ? 'Bestand wordt gemaakt…' : `Zet op ${widthMm} × ${heightMm} mm en gebruik`}
+              {busy ? 'Bestand wordt gemaakt…' : (doneLabel || `Zet op ${widthMm} × ${heightMm} mm en gebruik`)}
             </button>
             <button
               type="button"
@@ -649,7 +665,7 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
               onClick={() => onDone({ ok: allOk, note: noteFor(false) })}
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
-              Origineel gebruiken
+              {originalLabel || 'Origineel gebruiken'}
             </button>
             <p className="text-[10px] leading-snug text-slate-500">Het bestand wordt als pdf op eindformaat plus afloop gezet, zodat het direct ingeslagen kan worden. De uitkomst komt als notitie bij het product in het backoffice.</p>
           </aside>

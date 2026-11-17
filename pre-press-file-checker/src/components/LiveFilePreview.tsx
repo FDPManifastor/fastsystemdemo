@@ -42,6 +42,9 @@ interface LiveFilePreviewProps {
   backActiveFileName?: string | null;
   onClearFile?: (side: 'front' | 'back' | 'both') => void;
   onSwapSides?: () => void;
+  /** Ruimere werkvlak (px), bijvoorbeeld in de pre-press check. */
+  maxCanvasWidth?: number;
+  maxCanvasHeight?: number;
 }
 
 export default function LiveFilePreview({
@@ -76,6 +79,8 @@ export default function LiveFilePreview({
   backActiveFileName,
   onClearFile,
   onSwapSides,
+  maxCanvasWidth,
+  maxCanvasHeight,
 }: LiveFilePreviewProps) {
   const [isMaximized, setIsMaximized] = useState(false);
   const [showGuidelines, setShowGuidelines] = useState(true);
@@ -105,8 +110,8 @@ export default function LiveFilePreview({
 
   // Previews should be shown larger as requested.
   // Since front and back are stacked vertically, they don't share horizontal space and can be beautifully large!
-  const maxWidth = isMaximized ? 850 : 540;
-  const maxHeight = isMaximized ? 720 : 540;
+  const maxWidth = maxCanvasWidth ? (isMaximized ? maxCanvasWidth * 1.2 : maxCanvasWidth) : (isMaximized ? 850 : 540);
+  const maxHeight = maxCanvasHeight ? (isMaximized ? maxCanvasHeight * 1.2 : maxCanvasHeight) : (isMaximized ? 720 : 540);
 
   let computedWidth = maxWidth;
   let computedHeight = maxHeight;

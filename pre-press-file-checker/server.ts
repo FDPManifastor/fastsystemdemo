@@ -162,6 +162,9 @@ type SessionInfo = { sessionId: string; role: "admin" | "branch"; branch: string
 /** Beheerder en filiaal-login (zonder eigen medewerkersaccount) hebben alle rechten; een persoonlijke login alleen de aangevinkte. */
 const hasPerm = (info: SessionInfo, perm: StaffPermission) => info.role === "admin" || info.perms === null || info.perms.includes(perm);
 const actorName = (info: SessionInfo) => (info.role === "admin" ? "Beheerder" : info.staffName || `Filiaal ${info.branch}`);
+const PRE_APPROVAL_STATUSES = ["Ingediend", "Bestanden Ontvangen", "In Controle", "Actie Vereist"];
+const cleanNote = (value: unknown) => (typeof value === "string" ? value.trim().slice(0, 500) : "");
+const cleanBleed = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 20 ? value : undefined);
 // "Ik ben ..." in de werkplaats: de naam moet een bestaande medewerker zijn (van het eigen filiaal, of zonder filiaal).
 async function resolveActor(info: SessionInfo, actingAs: unknown): Promise<string> {
   if (info.role === "branch" && typeof actingAs === "string" && actingAs.trim()) {
@@ -262,7 +265,9 @@ async function startServer() {
   app.set("trust proxy", process.env.NODE_ENV === "production" ? 1 : false);
   app.use(applySecurityHeaders);
   // Bestandsuploads (base64 in json) mogen groter zijn dan gewone verzoeken.
-  app.use(["/api/public/orders", "/api/public/ticket-drafts"], express.json({ limit: "32mb" }));
+  // Origineel en op maat gezette versie samen (twee bestanden van max. 20 MB).
+  app.use("/api/public/orders", express.json({ limit: "64mb" }));
+  app.use("/api/public/ticket-drafts", express.json({ limit: "32mb" }));
   app.use("/api/orders/:id/attachments", express.json({ limit: "32mb" }));
   app.use(express.json({ limit: "20mb" }));
   app.use(express.urlencoded({ limit: "32kb", extended: true }));
@@ -847,6 +852,16 @@ async function startServer() {
     if (!file) return res.status(400).json({ error: "Upload een geldig PDF-, PNG- of JPG-bestand van maximaal 20 MB." });
     const label = typeof req.body?.label === "string" ? req.body.label.trim().slice(0, 200) : "";
     const printReady = req.body?.printReady === true;
+    const prepressOf = typeof req.body?.prepressOf === "string" ? req.body.prepressOf : "";
+    if (prepressOf) {
+      if (!hasPerm(info, "prepress")) return denyPerm(res);
+      if (!(Array.isArray((current as any).customerFiles) ? (current as any).customerFiles : []).some((item: any) => item.id === prepressOf)) {
+        return res.status(400).json({ error: "Het bestand waarvoor de pre-press check is gedaan bestaat niet." });
+      }
+    }
+    const prepressOk = req.body?.prepressOk === true;
+    const prepressNote = cleanNote(req.body?.prepressNote);
+    const prepressBleed = cleanBleed(req.body?.prepressBleedMm);
     const actor = await resolveActor(info, req.body?.actingAs);
     let limitReached = false;
     const updated = await storage.updateOrder(req.params.id, (order) => {
@@ -854,11 +869,18 @@ async function startServer() {
       if (existing.length >= 30) { limitReached = true; return false; }
       const fileId = crypto.randomBytes(12).toString("hex");
       const uploadedAt = new Date().toISOString();
-      (order as any).extraFiles = [...existing, { id: fileId, fileName: file.fileName, fileType: file.fileType, size: file.size, label, by: actor, uploadedAt, ...(printReady ? { printReady: true } : {}) }];
+      (order as any).extraFiles = [...existing, { id: fileId, fileName: file.fileName, fileType: file.fileType, size: file.size, label, by: actor, uploadedAt, ...(printReady ? { printReady: true } : {}), ...(prepressOf ? { prepressOf } : {}) }];
       order.history = Array.isArray(order.history) ? order.history : [];
       order.history.push({ date: uploadedAt, status: order.status || "Ingediend", note: printReady ? `Bestand klaar om te printen: ${file.fileName}${label ? ` (${label})` : ""}.` : `Extra bijlage toegevoegd: ${file.fileName}${label ? ` (${label})` : ""}.`, internal: true, by: actor } as any);
       // Klaar om te printen = bestand is in orde: een nog niet goedgekeurde opdracht gaat naar "Preflight Goedgekeurd".
-      if (printReady && ["Ingediend", "Bestanden Ontvangen", "In Controle", "Actie Vereist"].includes(order.status || "Ingediend")) {
+      if (prepressOf) {
+        const original = ((order as any).customerFiles || []).find((item: any) => item.id === prepressOf);
+        if (original) {
+          original.prepress = { ok: prepressOk, note: prepressNote, bleedMm: prepressBleed, by: actor, at: uploadedAt, processedId: fileId };
+          order.history.push({ date: uploadedAt, status: order.status || "Ingediend", note: `Pre-press check gedaan voor ${original.fileName}${prepressNote ? `: ${prepressNote}` : ""}.`, internal: true, by: actor } as any);
+        }
+      }
+      if ((printReady || (prepressOf && prepressOk)) && PRE_APPROVAL_STATUSES.includes(order.status || "Ingediend")) {
         order.status = "Preflight Goedgekeurd";
         order.history.push({ date: uploadedAt, status: "Preflight Goedgekeurd", note: "Uw bestand is gecontroleerd en klaar om te printen.", by: actor } as any);
       }
@@ -985,7 +1007,7 @@ async function startServer() {
 
   app.put("/api/orders/:id", requireStaffSession, asyncRoute(async (req, res) => {
     const info = res.locals.session as SessionInfo;
-    const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit, logNote, extraInfo, helpRequest, actingAs } = req.body || {};
+    const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit, logNote, extraInfo, helpRequest, actingAs, prepressCheck } = req.body || {};
     const actor = await resolveActor(info, actingAs);
     const current = await storage.getOrder(req.params.id);
     if (!current || !canSeeOrder(current, info)) return res.status(404).json({ error: "Order not found." });
@@ -1024,6 +1046,12 @@ async function startServer() {
         payment.action === "mark-paid" || payment.action === "mark-unpaid"
       );
       if (!okAction) return res.status(400).json({ error: "Invalid payment update." });
+    }
+    if (prepressCheck !== undefined) {
+      if (!hasPerm(info, "prepress")) return denyPerm(res);
+      const pc = prepressCheck as any;
+      const known = (Array.isArray((current as any).customerFiles) ? (current as any).customerFiles : []).some((item: any) => item.id === pc?.fileId);
+      if (!pc || typeof pc !== "object" || typeof pc.ok !== "boolean" || !known) return res.status(400).json({ error: "Ongeldige pre-press check." });
     }
     const helpOpen = (Array.isArray(current.helpRequests) ? current.helpRequests : []) as any[];
     if (helpRequest !== undefined) {
@@ -1143,6 +1171,21 @@ async function startServer() {
       if (typeof extraInfo === "string") {
         (order as any).extraInfo = extraInfo.trim();
         order.history.push({ date: new Date().toISOString(), status: order.status || "Ingediend", note: extraInfo.trim() ? "Extra info bij de specificatie aangepast." : "Extra info bij de specificatie verwijderd.", internal: true });
+      }
+
+      if (prepressCheck) {
+        const pc = prepressCheck as any;
+        const now = new Date().toISOString();
+        const original = ((order as any).customerFiles || []).find((item: any) => item.id === pc.fileId);
+        if (original) {
+          const note = cleanNote(pc.note);
+          original.prepress = { ok: pc.ok, note, by: actor, at: now, useOriginal: true };
+          order.history.push({ date: now, status: order.status || "Ingediend", note: `Pre-press check gedaan voor ${original.fileName} (origineel gebruikt)${note ? `: ${note}` : ""}.`, internal: true });
+          if (pc.ok && PRE_APPROVAL_STATUSES.includes(order.status || "Ingediend")) {
+            order.status = "Preflight Goedgekeurd";
+            order.history.push({ date: now, status: "Preflight Goedgekeurd", note: "Uw bestand is gecontroleerd en klaar om te printen." });
+          }
+        }
       }
 
       if (helpRequest) {
@@ -1276,6 +1319,13 @@ async function startServer() {
     }
 
     const file = validateCustomerFile(req.body?.file);
+    // Bij het maken van de opdrachtbon wordt het origineel bewaard en eventueel ook de op maat gezette versie (pre-press check).
+    const processed = req.body?.processed ? validateCustomerFile(req.body.processed) : null;
+    if (req.body?.processed && (!processed || processed.fileType !== "application/pdf")) {
+      return res.status(400).json({ error: "Het op maat gezette bestand is ongeldig." });
+    }
+    const prepressNote = cleanNote(req.body?.prepressNote);
+    const prepressBleed = cleanBleed(req.body?.prepressBleedMm);
     const existing = await storage.findOrderByUploadToken(uploadToken);
     if (!existing || !findProductUpload(existing, uploadToken)) {
       return res.status(404).json({ error: "Product upload link not found." });
@@ -1297,6 +1347,7 @@ async function startServer() {
       }
 
       const fileId = crypto.randomBytes(12).toString("hex");
+      const processedId = processed ? crypto.randomBytes(12).toString("hex") : "";
       const uploadedAt = new Date().toISOString();
       order.customerFiles = [...customerFiles, {
         id: fileId,
@@ -1307,8 +1358,12 @@ async function startServer() {
         productLineId: productUpload.id,
         productName: productUpload.description,
         productQuantity: productUpload.quantity,
-        uploadedAt
+        uploadedAt,
+        ...(processed || prepressNote ? { prepress: { ok: !/aandachtspunten/i.test(prepressNote), note: prepressNote, bleedMm: prepressBleed, by: "Bij het maken van de bon", at: uploadedAt, ...(processed ? { processedId } : { useOriginal: true }) } } : {})
       }];
+      if (processed) {
+        (order as any).extraFiles = [...(Array.isArray((order as any).extraFiles) ? (order as any).extraFiles : []), { id: processedId, fileName: processed.fileName, fileType: processed.fileType, size: processed.size, label: "Pre-press: op maat gezet", by: "Bij het maken van de bon", uploadedAt, prepressOf: fileId }];
+      }
       order.status = "Bestanden Ontvangen";
       order.history = Array.isArray(order.history) ? order.history : [];
       order.history.push({
@@ -1318,7 +1373,9 @@ async function startServer() {
       });
 
       const newFile: NewFile = { id: fileId, fileName: file.fileName, fileType: file.fileType, dataUrl: file.dataUrl };
-      return { addFiles: [newFile] };
+      const addFiles: NewFile[] = [newFile];
+      if (processed) addFiles.push({ id: processedId, fileName: processed.fileName, fileType: processed.fileType, dataUrl: processed.dataUrl });
+      return { addFiles };
     });
 
     if (limitReached) {

@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
-import { FileThumb, getUploadFileType, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, readFileAsDataUrl } from './ticket/TicketTools';
+import { FileThumb, TicketPrepressModal, getUploadFileType, MAX_UPLOAD_BYTES, MAX_UPLOAD_LABEL, readFileAsDataUrl } from './ticket/TicketTools';
 import { formatWhen, helpRequestsOf, orderProgress, type AnyOrder } from '../utils/orderProgress';
 
 const ImpositionModal = lazy(() => import('./ImpositionModal'));
@@ -202,7 +202,7 @@ export function ExtraSpecBox({ order, me, canEdit, canFiles, act, onChanged }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-  const files: AnyOrder[] = (Array.isArray(order.extraFiles) ? order.extraFiles : []).filter((file: AnyOrder) => !file.printReady);
+  const files: AnyOrder[] = (Array.isArray(order.extraFiles) ? order.extraFiles : []).filter((file: AnyOrder) => !file.printReady && !file.prepressOf);
 
   // Nieuwe versie van de server overschrijft alleen als je niet zelf aan het typen bent.
   useEffect(() => { if (!dirty) setText(saved); }, [saved, dirty]);
@@ -377,24 +377,82 @@ export function PrintReadyBox({ order, canFiles, me, onChanged }: { order: AnyOr
   );
 }
 
-/** Bestanden van de klant: origineel downloaden of imposeren (meerdere op een vel). */
+const PAPER_FOR_CHECK = [
+  { id: 'A8', width: 52, height: 74 }, { id: 'A7', width: 74, height: 105 }, { id: 'A6', width: 105, height: 148 },
+  { id: 'A5', width: 148, height: 210 }, { id: 'A4', width: 210, height: 297 }, { id: 'A3', width: 297, height: 420 },
+];
+
+/** Bestanden van de klant: eerst pre-press check (origineel blijft bewaard), daarna imposeren. */
 export function CustomerFilesBox({ order, lines, me, canPrepress, onChanged }: { order: AnyOrder; lines: AnyOrder[]; me: string; canPrepress: boolean; onChanged: () => void }) {
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [imposeId, setImposeId] = useState<string | null>(null);
+  const [check, setCheck] = useState<{ file: AnyOrder; blob: File; width: number; height: number } | null>(null);
+  const [sizeChoice, setSizeChoice] = useState<Record<string, string>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [message, setMessage] = useState('');
   const files: AnyOrder[] = Array.isArray(order.customerFiles) ? order.customerFiles : [];
+  const extra: AnyOrder[] = Array.isArray(order.extraFiles) ? order.extraFiles : [];
   if (files.length === 0) return null;
+  const fileUrl = (id: string) => `/api/orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(id)}`;
+
+  const knownSize = (file: AnyOrder, line?: AnyOrder) => {
+    const w = Number(line?.widthMm || order.customWidth);
+    const h = Number(line?.heightMm || order.customHeight);
+    return w > 0 && h > 0 ? { width: w, height: h } : null;
+  };
+  const detectedId = (file: AnyOrder) => {
+    const match = /(?:^|[^a-z0-9])a\s?([3-8])(?![0-9])/i.exec(String(file.productName || order.selectedProductName || ''));
+    return match ? `A${match[1]}` : '';
+  };
+
+  const startCheck = async (file: AnyOrder, line?: AnyOrder) => {
+    setMessage('');
+    setBusyId(file.id);
+    try {
+      const response = await fetch(fileUrl(file.id), { credentials: 'include' });
+      if (!response.ok) throw new Error('Het bestand kon niet worden opgehaald.');
+      const blob = await response.blob();
+      const chosen = sizeChoice[file.id] || (knownSize(file, line) ? 'order' : detectedId(file) || 'A4');
+      const size = chosen === 'order' ? knownSize(file, line)! : PAPER_FOR_CHECK.find((item) => item.id === chosen)!;
+      setCheck({ file, blob: new File([blob], file.fileName, { type: file.fileType || blob.type }), width: size.width, height: size.height });
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : 'De pre-press check kon niet worden gestart.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const post = async (path: string, body: Record<string, unknown>, method = 'POST') => {
+    const response = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ ...body, actingAs: me || undefined }) });
+    if (!response.ok) return ((await response.json().catch(() => ({}))) as any).error || 'Opslaan is mislukt.';
+    return null;
+  };
+
+  const finishCheck = async (outcome: { ok: boolean; note: string; file?: File; bleedMm?: number }) => {
+    if (!check) return;
+    const target = check.file;
+    setCheck(null);
+    setBusyId(target.id);
+    let failure: string | null;
+    if (outcome.file) {
+      if (outcome.file.size > 20 * 1024 * 1024) failure = 'Het op maat gezette bestand is groter dan 20 MB. Gebruik het origineel.';
+      else {
+        const dataUrl = await readFileAsDataUrl(outcome.file);
+        failure = await post(`/api/orders/${encodeURIComponent(order.id)}/attachments`, { file: { fileName: outcome.file.name, fileType: 'application/pdf', dataUrl }, label: 'Pre-press: op maat gezet', prepressOf: target.id, prepressOk: outcome.ok, prepressNote: outcome.note, prepressBleedMm: outcome.bleedMm });
+      }
+    } else {
+      failure = await post(`/api/orders/${encodeURIComponent(order.id)}`, { prepressCheck: { fileId: target.id, ok: outcome.ok, note: outcome.note } }, 'PUT');
+    }
+    setBusyId(null);
+    setMessage(failure || 'Pre-press check bewaard. Het origineel blijft bewaard. Je kunt nu imposeren.');
+    onChanged();
+  };
 
   const savePrintReady = async (pdf: Uint8Array, fileName: string, note: string): Promise<string | null> => {
     if (pdf.length > 20 * 1024 * 1024) return 'Het ingeslagen bestand is groter dan 20 MB en kan niet bij de opdracht worden bewaard. Gebruik "Alleen pdf downloaden".';
     try {
-      const response = await fetch(`/api/orders/${encodeURIComponent(order.id)}/attachments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ file: { fileName, fileType: 'application/pdf', dataUrl: `data:application/pdf;base64,${toBase64(pdf)}` }, label: note, printReady: true, actingAs: me || undefined }),
-      });
-      if (!response.ok) return ((await response.json().catch(() => ({}))) as any).error || 'Opslaan bij de opdracht is mislukt.';
-      onChanged();
-      return null;
+      const failure = await post(`/api/orders/${encodeURIComponent(order.id)}/attachments`, { file: { fileName, fileType: 'application/pdf', dataUrl: `data:application/pdf;base64,${toBase64(pdf)}` }, label: note, printReady: true });
+      if (!failure) onChanged();
+      return failure;
     } catch {
       return 'De server is niet bereikbaar.';
     }
@@ -403,13 +461,20 @@ export function CustomerFilesBox({ order, lines, me, canPrepress, onChanged }: {
   return (
     <section className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
       <h5 className="text-xs font-extrabold uppercase tracking-widest text-slate-700">Bestanden van de klant</h5>
+      <p className="text-[11px] text-slate-500">Stap 1: pre-press check. Stap 2: imposeren. Het originele bestand blijft altijd bewaard.</p>
+      {message && <p role="status" className="rounded-lg border border-slate-200 bg-white p-2 text-xs font-semibold text-slate-800">{message}</p>}
       {files.map((file) => {
-        const url = `/api/orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(file.id)}`;
         const line = lines.find((item) => item.id && item.id === file.productLineId);
+        const prepress = file.prepress;
+        const processed = prepress?.processedId ? extra.find((item) => item.id === prepress.processedId) : undefined;
+        const known = knownSize(file, line);
+        const detected = detectedId(file);
+        const choice = sizeChoice[file.id] || (known ? 'order' : detected || 'A4');
+        const sourceId = processed ? processed.id : file.id;
         return (
           <div key={file.id} className="space-y-3 rounded-lg bg-white p-3">
             <div className="flex items-center gap-3">
-              <FileThumb remoteUrl={url} fileName={file.fileName} fileType={file.fileType} size={56} />
+              <FileThumb remoteUrl={fileUrl(file.id)} fileName={file.fileName} fileType={file.fileType} size={56} />
               <div className="min-w-0 flex-1">
                 <p className="break-words text-sm font-extrabold text-slate-900" title={file.fileName}>{file.fileName}</p>
                 <p className="text-[11px] text-slate-500">
@@ -417,28 +482,69 @@ export function CustomerFilesBox({ order, lines, me, canPrepress, onChanged }: {
                 </p>
               </div>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <a href={url} className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-extrabold text-slate-800 hover:bg-slate-50">⬇ Origineel downloaden</a>
-              <button type="button" disabled={!canPrepress} onClick={() => setOpenId(file.id)} className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-[#e31c24] px-4 text-sm font-extrabold text-white hover:bg-[#b8141a] disabled:opacity-50">🧩 Imposeren (SRA3)</button>
+
+            <div className={`rounded-lg border p-2.5 text-xs ${prepress ? (prepress.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900') : 'border-rose-200 bg-rose-50 text-rose-900'}`}>
+              {prepress ? (
+                <>
+                  <p className="font-extrabold">{prepress.ok ? '✓ Pre-press check gedaan' : '⚠ Pre-press check gedaan, met aandachtspunten'} · {processed ? 'op maat gezet' : 'origineel gebruikt'}</p>
+                  <p className="mt-0.5">{[prepress.by, formatWhen(prepress.at)].filter(Boolean).join(' · ')}{prepress.note ? ` · ${prepress.note}` : ''}</p>
+                </>
+              ) : (
+                <p className="font-extrabold">Nog geen pre-press check. Doe eerst de check, daarna kun je imposeren.</p>
+              )}
             </div>
-            {!canPrepress && <p className="text-[11px] text-slate-500">Imposeren mag alleen met het recht “Pre-press”. Vraag de beheerder.</p>}
-            {openId === file.id && (
+
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <label className="flex items-center gap-2 font-bold text-slate-600">
+                Formaat voor de check
+                <select value={choice} onChange={(event) => setSizeChoice((current) => ({ ...current, [file.id]: event.target.value }))} className="min-h-[44px] rounded-lg border border-slate-300 bg-white px-2 text-sm font-bold text-slate-900">
+                  {known && <option value="order">Zoals in de opdracht ({known.width} × {known.height} mm)</option>}
+                  {PAPER_FOR_CHECK.map((item) => <option key={item.id} value={item.id}>{item.id} ({item.width} × {item.height} mm)</option>)}
+                </select>
+              </label>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-3">
+              <button type="button" disabled={!canPrepress || busyId === file.id} onClick={() => startCheck(file, line)} className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-extrabold text-white hover:bg-slate-700 disabled:opacity-50">
+                {busyId === file.id ? 'Bezig…' : prepress ? '🔍 Check opnieuw' : '🔍 Pre-press check'}
+              </button>
+              <button type="button" disabled={!canPrepress || !prepress} onClick={() => setImposeId(file.id)} title={prepress ? '' : 'Doe eerst de pre-press check'} className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-[#e31c24] px-4 text-sm font-extrabold text-white hover:bg-[#b8141a] disabled:opacity-40">🧩 Imposeren (SRA3)</button>
+              <a href={fileUrl(file.id)} className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-extrabold text-slate-800 hover:bg-slate-50">⬇ Origineel downloaden</a>
+            </div>
+            {processed && <a href={fileUrl(processed.id)} className="inline-block text-[11px] font-bold text-slate-700 underline">Op maat gezet bestand downloaden ({processed.fileName})</a>}
+            {!canPrepress && <p className="text-[11px] text-slate-500">Check en imposeren mogen alleen met het recht “Pre-press”. Vraag de beheerder.</p>}
+
+            {imposeId === file.id && (
               <Suspense fallback={null}>
                 <ImpositionModal
-                  fileUrl={url}
-                  fileName={file.fileName}
-                  fileType={file.fileType}
+                  fileUrl={fileUrl(sourceId)}
+                  fileName={processed ? processed.fileName : file.fileName}
+                  fileType={processed ? 'application/pdf' : file.fileType}
                   productName={file.productName || order.selectedProductName}
-                  defaultWidthMm={Number(line?.widthMm || order.customWidth) || undefined}
-                  defaultHeightMm={Number(line?.heightMm || order.customHeight) || undefined}
+                  defaultWidthMm={processed || prepress ? (known?.width || PAPER_FOR_CHECK.find((item) => item.id === choice)?.width) : known?.width}
+                  defaultHeightMm={processed || prepress ? (known?.height || PAPER_FOR_CHECK.find((item) => item.id === choice)?.height) : known?.height}
+                  sourceBleedMm={processed ? Number(prepress?.bleedMm) || 0 : 0}
                   onPrintReady={savePrintReady}
-                  onClose={() => setOpenId(null)}
+                  onClose={() => setImposeId(null)}
                 />
               </Suspense>
             )}
           </div>
         );
       })}
+      {check && (
+        <TicketPrepressModal
+          file={check.blob}
+          description={String(check.file.productName || order.selectedProductName || 'Product')}
+          category="Flyer"
+          widthMm={check.width}
+          heightMm={check.height}
+          doneLabel={`✓ Klaar: zet op ${check.width} × ${check.height} mm en bewaar voor imposeren`}
+          originalLabel="Origineel gebruiken (niet aanpassen)"
+          onClose={() => setCheck(null)}
+          onDone={finishCheck}
+        />
+      )}
     </section>
   );
 }

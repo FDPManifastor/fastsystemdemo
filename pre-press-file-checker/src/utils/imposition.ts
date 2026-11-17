@@ -15,6 +15,8 @@ export interface ImpositionSettings {
   cropMarks: boolean;
   /** Ruimte tussen de ontwerpen (van snijrand tot snijrand). Standaard 4 mm. */
   gapMm?: number;
+  /** Alleen bij een pdf die al op eindformaat + afloop is gezet (pre-press check): zoveel mm afloop zit er al rondom in het bestand. */
+  sourceBleedMm?: number;
 }
 
 export const DEFAULT_GAP_MM = 4;
@@ -157,7 +159,11 @@ export async function buildImposedPdf(source: Uint8Array, fileType: string, sett
 
   for (const artwork of artworks) {
     const page = output.addPage([settings.sheetWidthMm * MM, settings.sheetHeightMm * MM]);
-    const scale = Math.max(cellW / artwork.width, cellH / artwork.height);
+    const sourceBleed = fileType === 'application/pdf' ? Math.max(0, settings.sourceBleedMm || 0) * MM : 0;
+    const innerW = artwork.width - 2 * sourceBleed;
+    const innerH = artwork.height - 2 * sourceBleed;
+    // Met afloop in het bestand: de snijrand van het ontwerp valt precies op de snijrand van het vak.
+    const scale = sourceBleed > 0 && innerW > 0 && innerH > 0 ? Math.max(trimW / innerW, trimH / innerH) : Math.max(cellW / artwork.width, cellH / artwork.height);
     const drawW = artwork.width * scale;
     const drawH = artwork.height * scale;
 

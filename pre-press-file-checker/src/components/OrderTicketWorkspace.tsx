@@ -38,6 +38,9 @@ interface TicketLine {
   sku: string;
   priceSource: string;
   file: File | null;
+  /** Het bestand zoals de klant het aanleverde; wordt altijd bewaard, ook als `file` op maat is gezet. */
+  originalFile?: File | null;
+  prepressBleed?: number;
   prepressNote: string;
   /** Id van een bestaande productregel (bij aanpassen van een opgeslagen bon). */
   lineId?: string;
@@ -382,6 +385,28 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
     setCalculatorIndex(null);
   };
 
+  /** Upload: altijd het origineel, plus de op maat gezette versie uit de pre-press check als die er is. */
+  const uploadBody = async (line: { file: File | null; originalFile?: File | null; prepressNote: string; prepressBleed?: number }, withProcessed = true) => {
+    const original = line.originalFile || line.file!;
+    const body: Record<string, unknown> = { file: { fileName: original.name, fileType: getUploadFileType(original), dataUrl: await readFileAsDataUrl(original) } };
+    if (line.prepressNote) body.prepressNote = line.prepressNote;
+    if (line.prepressBleed !== undefined) body.prepressBleedMm = line.prepressBleed;
+    if (withProcessed && line.originalFile && line.file && line.file !== line.originalFile) {
+      body.processed = { fileName: line.file.name, fileType: 'application/pdf', dataUrl: await readFileAsDataUrl(line.file) };
+    }
+    return JSON.stringify(body);
+  };
+  const postProductFile = async (token: string, line: { file: File | null; originalFile?: File | null; prepressNote: string; prepressBleed?: number }) => {
+    const url = `/api/public/orders/${encodeURIComponent(token)}/product-files`;
+    const headers = { 'Content-Type': 'application/json' };
+    let response = await fetch(url, { method: 'POST', headers, body: await uploadBody(line) });
+    // Te groot voor één verzoek? Bewaar dan in elk geval het origineel.
+    if (!response.ok && line.originalFile && line.file !== line.originalFile) {
+      response = await fetch(url, { method: 'POST', headers, body: await uploadBody(line, false) });
+    }
+    return response;
+  };
+
   const chooseFile = (lineIndex: number, file: File | null) => {
     setError('');
     if (file && file.size > MAX_UPLOAD_BYTES) {
@@ -392,7 +417,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       setError('Kies een PDF-, PNG- of JPG-bestand.');
       return;
     }
-    updateLine(lineIndex, { file, prepressNote: '' });
+    updateLine(lineIndex, { file, originalFile: file, prepressBleed: undefined, prepressNote: '' });
     if (file) setPrepressIndex(lineIndex);
   };
 
@@ -875,12 +900,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
           const token = savedLines[index]?.uploadToken;
           if (!line.file || !token) continue;
           try {
-            const dataUrl = await readFileAsDataUrl(line.file);
-            const uploadResponse = await fetch(`/api/public/orders/${encodeURIComponent(token)}/product-files`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ file: { fileName: line.file.name, fileType: getUploadFileType(line.file), dataUrl } }),
-            });
+            const uploadResponse = await postProductFile(token, line);
             if (!uploadResponse.ok) failed += 1;
           } catch {
             failed += 1;
@@ -904,18 +924,13 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
 
       // Bestanden die bij een product zijn toegevoegd direct aan dat product koppelen.
       const pending = usedLines
-        .map((line, index) => ({ file: line.file, index, token: uploadLinks[index]?.uploadToken }))
-        .filter((entry): entry is { file: File; index: number; token: string } => Boolean(entry.file && entry.token));
+        .map((line, index) => ({ file: line.file, line, index, token: uploadLinks[index]?.uploadToken }))
+        .filter((entry): entry is { file: File; line: typeof usedLines[number]; index: number; token: string } => Boolean(entry.file && entry.token));
       setUploadStates(Object.fromEntries(pending.map((entry) => [entry.index, 'uploading' as const])));
       for (const entry of pending) {
         let uploaded = false;
         try {
-          const dataUrl = await readFileAsDataUrl(entry.file);
-          const uploadResponse = await fetch(`/api/public/orders/${encodeURIComponent(entry.token)}/product-files`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file: { fileName: entry.file.name, fileType: getUploadFileType(entry.file), dataUrl } }),
-          });
+          const uploadResponse = await postProductFile(entry.token, entry.line);
           uploaded = uploadResponse.ok;
         } catch (uploadError) {
           console.error('Bestand uploaden mislukt:', uploadError);
@@ -1574,7 +1589,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
           heightMm={Number(lines[prepressIndex].height) || 297}
           onClose={() => setPrepressIndex(null)}
           onDone={(outcome) => {
-            updateLine(prepressIndex, outcome.file ? { prepressNote: outcome.note, file: outcome.file } : { prepressNote: outcome.note });
+            updateLine(prepressIndex, outcome.file ? { prepressNote: outcome.note, file: outcome.file, prepressBleed: outcome.bleedMm } : { prepressNote: outcome.note, file: lines[prepressIndex].originalFile || lines[prepressIndex].file, prepressBleed: undefined });
             setPrepressIndex(null);
           }}
         />
