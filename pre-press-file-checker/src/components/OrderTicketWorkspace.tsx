@@ -38,6 +38,8 @@ interface TicketLine {
   priceSource: string;
   file: File | null;
   prepressNote: string;
+  /** Id van een bestaande productregel (bij aanpassen van een opgeslagen bon). */
+  lineId?: string;
   /** Uploadlink voor de klant (QR) terwijl de bon nog wordt gemaakt. */
   draftToken: string;
 }
@@ -65,6 +67,10 @@ interface OrderTicketWorkspaceProps {
   onOrderCreated?: () => void;
   onViewOrders: () => void;
   publicAccess?: boolean;
+  /** Bestaande opdrachtbon aanpassen in het backoffice. */
+  editOrder?: Record<string, any> | null;
+  onEditSaved?: () => void;
+  onEditCancel?: () => void;
 }
 
 interface CreatedTicket {
@@ -290,7 +296,7 @@ function PaymentBox({ title, checked, shaded, onToggle, disabled, children }: { 
 /* Hoofdcomponent                                                      */
 /* ------------------------------------------------------------------ */
 
-export default function OrderTicketWorkspace({ products, staff, onOrderCreated, onViewOrders, publicAccess = false }: OrderTicketWorkspaceProps) {
+export default function OrderTicketWorkspace({ products, staff, onOrderCreated, onViewOrders, publicAccess = false, editOrder = null, onEditSaved, onEditCancel }: OrderTicketWorkspaceProps) {
   const [ticketNumber, setTicketNumber] = useState(newTicketNumber);
   const [customerName, setCustomerName] = useState('');
   const [contactPerson, setContactPerson] = useState('');
@@ -314,6 +320,10 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const depositInputRef = useRef<HTMLInputElement>(null);
   const [notes, setNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
+  const [branch, setBranch] = useState(() => {
+    try { return window.localStorage.getItem('fd_bon_branch') || ''; } catch { return ''; }
+  });
+  const [branchStaff, setBranchStaff] = useState<string[]>([]);
   const [qrOpenIndex, setQrOpenIndex] = useState<number | null>(null);
   const [addMenuIndex, setAddMenuIndex] = useState<number | null>(null);
   const [restoredAt, setRestoredAt] = useState<number | null>(null);
@@ -383,9 +393,92 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
     if (file) setPrepressIndex(lineIndex);
   };
 
+  // Medewerkers van het gekozen filiaal voor "Geholpen door".
+  const staffBranch = editOrder ? String(editOrder.branch || 'Amsterdam') : branch;
+  useEffect(() => {
+    if (!staffBranch) {
+      setBranchStaff([]);
+      return;
+    }
+    let active = true;
+    fetch(`/api/public/staff?branch=${encodeURIComponent(staffBranch)}`)
+      .then((response) => (response.ok ? response.json() : { names: [] }))
+      .then((data) => {
+        if (active) setBranchStaff(Array.isArray(data.names) ? data.names : []);
+      })
+      .catch(() => {
+        if (active) setBranchStaff([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [staffBranch]);
+
+  const chooseBranch = (value: string) => {
+    setBranch(value);
+    setHelpedBy('');
+    try { window.localStorage.setItem('fd_bon_branch', value); } catch { /* geen opslag beschikbaar */ }
+  };
+
+  // Bestaande bon: velden vullen vanuit de opgeslagen opdracht.
+  useEffect(() => {
+    if (!editOrder) return;
+    const o = editOrder;
+    const num = (value: unknown) => Number(value) || 0;
+    const euro = (value: number) => value.toFixed(2).replace('.', ',');
+    setTicketNumber(String(o.order_number || ''));
+    setCustomerName(String(o.clientName || ''));
+    setContactPerson(String(o.contact_person || ''));
+    setAddress(String(o.client_address || ''));
+    setPostcodeCity(String(o.client_postcode_city || ''));
+    setEmail(String(o.clientEmail || ''));
+    setPhone(o.clientPhone && o.clientPhone !== '-' ? String(o.clientPhone) : '');
+    setReference(String(o.clientReference || ''));
+    setDeliveryDate(String(o.delivery_date || ''));
+    setDeliveryMethod(o.delivery_method === 'Bezorgen' ? 'Bezorgen' : 'Afhalen');
+    setDeliveryAddress(String(o.delivery_address || ''));
+    setHelpedBy(String(o.assisted_by || ''));
+    setAssignedStaff(String(o.assignedStaff || ''));
+    setStatus(String(o.order_status || 'Nieuw'));
+    setCustomerApproved(Boolean(o.customer_approved));
+    setNotes(String(o.notes || ''));
+    setInternalNotes(String(o.internal_notes || ''));
+    const total = num(o.grand_total);
+    const paid = num(o.prepayment);
+    const full = o.payment_status === 'Volledig betaald';
+    setPaidInAdvance(full && total > 0 && paid >= total);
+    setDepositOn(paid > 0 && !(full && paid >= total));
+    setRestPaid(full && paid < total);
+    setPrepayment(paid > 0 && paid < total ? euro(paid) : '0,00');
+    try {
+      const saved = JSON.parse(String(o.products_json || '[]')) as Array<Record<string, any>>;
+      setLines(saved.map((line) => ({
+        ...emptyLine(),
+        lineId: String(line.id || ''),
+        description: String(line.description || ''),
+        productId: String(line.productId || ''),
+        category: String(line.category || ''),
+        width: String(line.widthMm ?? ''),
+        height: String(line.heightMm ?? ''),
+        printSides: line.printSides === 'double' ? 'double' : 'single',
+        quantity: String(line.quantity ?? '1'),
+        price: euro(num(line.unitPrice)),
+        vatIncluded: line.vatIncluded === true,
+        fixedTotal: typeof line.fixedTotal === 'number' ? line.fixedTotal : null,
+        sku: String(line.sku || ''),
+        priceSource: String(line.priceSource || ''),
+        prepressNote: String(line.prepressNote || ''),
+      })));
+    } catch {
+      setError('De productregels van deze bon konden niet worden geladen.');
+    }
+    // Alleen bij het openen van de bon.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editOrder?.id]);
+
   // Een bon die nog niet is afgerond blijft 8 uur bewaard in deze browser (zonder bestanden).
   useEffect(() => {
-    if (draftRestoredRef.current) return;
+    if (draftRestoredRef.current || editOrder) return;
     draftRestoredRef.current = true;
     try {
       setDraftReady(true);
@@ -426,7 +519,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   }, []);
 
   useEffect(() => {
-    if (!draftReady || createdTicket) return;
+    if (!draftReady || createdTicket || editOrder) return;
     const hasContent = Boolean(customerName.trim() || email.trim() || phone.trim() || notes.trim() || lines.some((line) => line.description.trim() || line.price.trim() || line.draftToken));
     try {
       if (!hasContent) {
@@ -690,7 +783,8 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         ...(line.fixedTotal !== null ? { fixedTotal: line.fixedTotal } : {}),
         ...(line.sku ? { sku: line.sku } : {}),
         ...(line.priceSource ? { priceSource: line.priceSource } : {}),
-        ...(line.file && line.prepressNote ? { prepressNote: line.prepressNote } : {}),
+        ...(line.lineId ? { id: line.lineId } : {}),
+        ...((line.file || line.lineId) && line.prepressNote ? { prepressNote: line.prepressNote } : {}),
       }));
 
     if (totals.incomplete || totals.invalid || validLines.length === 0) {
@@ -708,7 +802,15 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       return;
     }
 
-    const helper = publicAccess ? helpedBy.trim() : assignedStaff;
+    const helper = publicAccess || editOrder ? helpedBy.trim() : assignedStaff;
+    if (publicAccess && !editOrder && !branch) {
+      setError('Kies eerst het filiaal waar deze bon wordt gemaakt.');
+      return;
+    }
+    if ((publicAccess || editOrder) && !helper) {
+      setError('Kies de medewerker die de klant heeft geholpen.');
+      return;
+    }
     const primaryLine = validLines[0];
     const payload = {
       clientName: customerName.trim(),
@@ -734,6 +836,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       delivery_method: deliveryMethod,
       delivery_address: finalDeliveryAddress,
       assisted_by: helper,
+      ...(publicAccess && !editOrder ? { branch } : {}),
       order_status: publicAccess ? 'Nieuw' : status,
       payment_status: totals.paymentStatus,
       products_json: JSON.stringify(validLines),
@@ -749,15 +852,39 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
 
     setIsSaving(true);
     try {
-      const response = await fetch(publicAccess ? '/api/orders' : '/api/admin/orders', {
-        method: 'POST',
+      const response = await fetch(editOrder ? `/api/orders/${encodeURIComponent(String(editOrder.id))}` : publicAccess ? '/api/orders' : '/api/admin/orders', {
+        method: editOrder ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ orderData: payload }),
+        body: JSON.stringify(editOrder ? { edit: { orderData: payload } } : { orderData: payload }),
       });
       const result = await response.json();
       if (!response.ok) {
         setError(result.error || 'De opdrachtbon kon niet worden opgeslagen.');
+        return;
+      }
+      if (editOrder) {
+        // Nieuw toegevoegde bestanden koppelen aan de (bestaande of nieuwe) productregel.
+        let savedLines: Array<{ uploadToken?: string }> = [];
+        try { savedLines = JSON.parse(String(result.order?.products_json || '[]')); } catch { /* geen regels */ }
+        let failed = 0;
+        for (const [index, line] of usedLines.entries()) {
+          const token = savedLines[index]?.uploadToken;
+          if (!line.file || !token) continue;
+          try {
+            const dataUrl = await readFileAsDataUrl(line.file);
+            const uploadResponse = await fetch(`/api/public/orders/${encodeURIComponent(token)}/product-files`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ file: { fileName: line.file.name, fileType: getUploadFileType(line.file), dataUrl } }),
+            });
+            if (!uploadResponse.ok) failed += 1;
+          } catch {
+            failed += 1;
+          }
+        }
+        if (failed) window.alert(`${failed} bestand(en) konden niet worden geüpload. Voeg ze opnieuw toe via de uploadlink.`);
+        onEditSaved?.();
         return;
       }
       const uploadLinks: CreatedTicket['productUploadLinks'] = Array.isArray(result.productUploadLinks) ? result.productUploadLinks : [];
@@ -1068,13 +1195,19 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         {/* Werkbalk, zoals de knoppen bovenaan de papieren bon */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-lg font-extrabold text-slate-900">Nieuwe opdrachtbon</h2>
-            <p className="text-xs text-slate-500">Na opslaan staat de opdracht direct in het backoffice ordersysteem.</p>
+            <h2 className="text-lg font-extrabold text-slate-900">{editOrder ? `Opdrachtbon ${ticketNumber} aanpassen` : 'Nieuwe opdrachtbon'}</h2>
+            <p className="text-xs text-slate-500">{editOrder ? 'Wijzigingen worden bij het opslaan in de opdracht overgenomen en in het logboek van de opdracht vermeld.' : 'Na opslaan staat de opdracht direct in het backoffice ordersysteem.'}</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={resetForm} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50">
-              <Eraser className="h-4 w-4" /> Leegmaken
-            </button>
+            {editOrder ? (
+              <button type="button" onClick={() => onEditCancel?.()} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50">
+                Annuleren
+              </button>
+            ) : (
+              <button type="button" onClick={resetForm} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50">
+                <Eraser className="h-4 w-4" /> Leegmaken
+              </button>
+            )}
             <button type="submit" disabled={isSaving || totals.itemCount === 0} className="inline-flex items-center gap-2 rounded-lg bg-[#e31c24] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#b8141a] disabled:cursor-not-allowed disabled:opacity-50">
               <Save className="h-4 w-4" /> {isSaving ? 'Opslaan…' : 'Opdrachtbon opslaan'}
             </button>
@@ -1128,9 +1261,20 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 <FieldRow label="Bon nummer:">
                   <ReadValue><span className="font-mono text-xs">{ticketNumber}</span></ReadValue>
                 </FieldRow>
+                {publicAccess && !editOrder && (
+                  <FieldRow label="Filiaal:" htmlFor="ticket-branch">
+                    <select id="ticket-branch" required value={branch} onChange={(event) => chooseBranch(event.target.value)} className={lineInput}>
+                      <option value="">— kies filiaal —</option>
+                      {['Amsterdam', 'Utrecht', 'Hoogvliet'].map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                  </FieldRow>
+                )}
                 <FieldRow label="Geholpen door:" htmlFor="ticket-helper">
-                  {publicAccess ? (
-                    <input id="ticket-helper" maxLength={200} value={helpedBy} onChange={(event) => setHelpedBy(event.target.value)} placeholder="Naam medewerker" className={lineInput} />
+                  {publicAccess || editOrder ? (
+                    <select id="ticket-helper" required value={helpedBy} onChange={(event) => setHelpedBy(event.target.value)} className={lineInput}>
+                      <option value="">{staffBranch ? '— kies medewerker —' : '— kies eerst een filiaal —'}</option>
+                      {[...new Set([...branchStaff, ...(helpedBy ? [helpedBy] : [])])].map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
                   ) : (
                     <select id="ticket-helper" value={assignedStaff} onChange={(event) => setAssignedStaff(event.target.value)} className={lineInput}>
                       <option value="">— kies medewerker —</option>

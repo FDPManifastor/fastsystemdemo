@@ -190,6 +190,19 @@ export default function App() {
     setActivePortal('client');
   };
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(false);
+  /** Wie is ingelogd: beheerder ziet alles, een filiaal alleen de eigen en gedeelde opdrachten. */
+  const [sessionRole, setSessionRole] = useState<'admin' | 'branch'>('admin');
+  const [sessionBranch, setSessionBranch] = useState<string>('');
+  const [loginBranch, setLoginBranch] = useState<string>('');
+  const [branchFilter, setBranchFilter] = useState<string>('Alle');
+  const [editingOrder, setEditingOrder] = useState<any | null>(null);
+  const [clientBranch, setClientBranch] = useState('');
+  const [staffBranchInput, setStaffBranchInput] = useState<string>('Amsterdam');
+  const [branchPasswords, setBranchPasswords] = useState<Record<string, string>>({});
+  const [branchPasswordSet, setBranchPasswordSet] = useState<Record<string, boolean>>({});
+  const [branchPasswordMessage, setBranchPasswordMessage] = useState<string>('');
+  const BRANCHES = ['Amsterdam', 'Utrecht', 'Hoogvliet'];
+  const isOwner = sessionRole === 'admin';
   const [adminPasswordInput, setAdminPasswordInput] = useState<string>('');
   const [adminAuthError, setAdminAuthError] = useState<string | null>(null);
   const [trackingQrCode, setTrackingQrCode] = useState<string>('');
@@ -677,6 +690,55 @@ export default function App() {
     }, 400);
   }
 
+  const fetchBranchPasswords = async () => {
+    try {
+      const response = await fetch('/api/admin/branches', { credentials: 'include' });
+      if (!response.ok) return;
+      const data = await response.json();
+      setBranchPasswordSet(Object.fromEntries((data.branches || []).map((entry: any) => [entry.branch, Boolean(entry.passwordSet)])));
+    } catch {
+      // Alleen de beheerder kan dit zien.
+    }
+  };
+
+  const saveBranchPassword = async (branch: string) => {
+    const password = branchPasswords[branch] || '';
+    setBranchPasswordMessage('');
+    if (password.length < 8) {
+      setBranchPasswordMessage('Gebruik minimaal 8 tekens.');
+      return;
+    }
+    const response = await fetch(`/api/admin/branches/${encodeURIComponent(branch)}/password`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ password }),
+    });
+    if (response.ok) {
+      setBranchPasswords((current) => ({ ...current, [branch]: '' }));
+      setBranchPasswordMessage(`Wachtwoord voor ${branch} is opgeslagen.`);
+      fetchBranchPasswords();
+    } else {
+      const failure = await response.json().catch(() => ({}));
+      setBranchPasswordMessage(failure.error || 'Opslaan mislukt.');
+    }
+  };
+
+  /** Een opdracht delen met filialen, of (beheerder) naar een ander filiaal verplaatsen. */
+  const handleOrderBranchChange = async (orderId: string, changes: { sharedWith?: string[]; moveToBranch?: string }) => {
+    const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(changes),
+    });
+    if (!response.ok) {
+      const failure = await response.json().catch(() => ({}));
+      window.alert(failure.error || 'Aanpassen mislukt.');
+    }
+    fetchAdminOrders();
+  };
+
   const fetchAdminStaff = async () => {
     setIsLoadingStaff(true);
     setStaffError(null);
@@ -707,7 +769,7 @@ export default function App() {
           'Content-Type': 'application/json'
         },
         credentials: 'include',
-        body: JSON.stringify({ name: staffNameInput, role: staffRoleInput })
+        body: JSON.stringify({ name: staffNameInput, role: staffRoleInput, branch: staffBranchInput })
       });
       if (response.ok) {
         setStaffNameInput("");
@@ -801,12 +863,16 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ password: adminPasswordInput })
+        body: JSON.stringify({ password: adminPasswordInput, ...(loginBranch ? { branch: loginBranch } : {}) })
       });
       if (!response.ok) {
-        setAdminAuthError('Onjuist wachtwoord.');
+        const failure = await response.json().catch(() => ({}));
+        setAdminAuthError(typeof failure.error === 'string' && failure.error.startsWith('Voor dit filiaal') ? failure.error : 'Onjuist wachtwoord.');
         return;
       }
+      const loggedIn = await response.json().catch(() => ({}));
+      setSessionRole(loggedIn.role === 'branch' ? 'branch' : 'admin');
+      setSessionBranch(typeof loggedIn.branch === 'string' ? loggedIn.branch : '');
       setIsAdminAuthenticated(true);
       setAdminPasswordInput('');
       fetchAdminOrders();
@@ -823,10 +889,16 @@ export default function App() {
       return;
     }
 
+    if (!clientBranch) {
+      setSubmissionError('Kies het filiaal waar u uw opdracht wilt laten uitvoeren.');
+      return;
+    }
+
     setIsSubmittingOrder(true);
     setSubmissionError(null);
 
     const orderData = {
+      branch: clientBranch,
       clientName,
       clientEmail,
       clientPhone,
@@ -1350,7 +1422,11 @@ export default function App() {
   useEffect(() => {
     fetch('/api/auth/session', { credentials: 'include' })
       .then((response) => response.json())
-      .then((data) => setIsAdminAuthenticated(Boolean(data.authenticated)))
+      .then((data) => {
+        setIsAdminAuthenticated(Boolean(data.authenticated));
+        setSessionRole(data.role === 'branch' ? 'branch' : 'admin');
+        setSessionBranch(typeof data.branch === 'string' ? data.branch : '');
+      })
       .catch(() => setIsAdminAuthenticated(false));
   }, []);
 
@@ -1376,8 +1452,9 @@ export default function App() {
     if (isAdminAuthenticated) {
       fetchAdminOrders();
       fetchAdminStaff();
+      if (sessionRole === 'admin') fetchBranchPasswords();
     }
-  }, [isAdminAuthenticated]);
+  }, [isAdminAuthenticated, sessionRole]);
 
   // Perform dynamic pre-press audit calculation based on chosen file and targets
   const analysisResult = useMemo((): FileAnalysis | null => {
@@ -2392,6 +2469,22 @@ export default function App() {
 
   return (
     <div className={`min-h-screen ${activePortal === 'admin' ? 'bg-[#fffafa]' : 'bg-slate-50'} font-sans text-slate-900 overflow-x-hidden`}>
+      {editingOrder && (
+        <div className="fixed inset-0 z-[80] overflow-y-auto bg-slate-900/60 p-3 sm:p-6">
+          <div className="mx-auto max-w-6xl rounded-2xl bg-slate-50 p-3 shadow-2xl sm:p-5">
+            <Suspense fallback={lazyFallback}>
+              <OrderTicketWorkspace
+                products={STANDARD_PRODUCTS}
+                staff={staffList}
+                editOrder={editingOrder}
+                onEditCancel={() => setEditingOrder(null)}
+                onEditSaved={() => { setEditingOrder(null); fetchAdminOrders(); }}
+                onViewOrders={() => setEditingOrder(null)}
+              />
+            </Suspense>
+          </div>
+        </div>
+      )}
       
       {/* SaaS Premium Header bar */}
       <header className="border-b border-slate-200 bg-white sticky top-0 z-40 shadow-xs">
@@ -2877,6 +2970,11 @@ export default function App() {
               </div>
               
               {isAdminAuthenticated && (
+                <span className="mr-3 rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-600">
+                  {sessionRole === 'admin' ? 'Beheerder · alle filialen' : `Filiaal ${sessionBranch}`}
+                </span>
+              )}
+              {isAdminAuthenticated && (
                 <button
                   type="button"
                   onClick={() => {
@@ -2904,10 +3002,19 @@ export default function App() {
                   <div className="space-y-1">
                     <h3 className="text-base font-extrabold text-slate-900">Beveiligde Toegang</h3>
                     <p className="text-xs text-slate-500 leading-relaxed">
-                      Voer het beheerder wachtwoord in om de geüploade bestanden en persoonsgegevens in te zien.
+                      Kies je filiaal (of beheerder) en voer het wachtwoord in om de opdrachten te zien.
                     </p>
                   </div>
                   <form onSubmit={handleAdminLogin} className="space-y-3">
+                    <select
+                      value={loginBranch}
+                      onChange={(e) => setLoginBranch(e.target.value)}
+                      aria-label="Inloggen als"
+                      className="w-full rounded-xl border border-slate-250 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-900"
+                    >
+                      <option value="">Beheerder (alle filialen)</option>
+                      {BRANCHES.map((branch) => <option key={branch} value={branch}>Filiaal {branch}</option>)}
+                    </select>
                     <div className="relative">
                       <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
                       <input
@@ -3359,6 +3466,13 @@ export default function App() {
                       </button>
                     ))}
 
+                    {isOwner && (
+                      <select value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} aria-label="Filter op filiaal" className="ml-1 shrink-0 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-bold text-slate-700">
+                        <option value="Alle">Alle filialen</option>
+                        {BRANCHES.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                      </select>
+                    )}
+
                     <button
                       type="button"
                       onClick={fetchAdminOrders}
@@ -3400,7 +3514,9 @@ export default function App() {
                           adminCategoryFilter === 'All' ||
                           (o.selectedProductCategory?.toLowerCase() === adminCategoryFilter.toLowerCase());
 
-                        return matchesSearch && matchesCategory;
+                        const matchesBranch = branchFilter === 'Alle' || (o.branch || 'Amsterdam') === branchFilter;
+
+                        return matchesSearch && matchesCategory && matchesBranch;
                       })
                       .map((order) => {
                         const createDate = new Date(order.createdAt || Date.now());
@@ -3448,6 +3564,11 @@ export default function App() {
                               <div className="flex min-w-0 items-center gap-3">
                                 <span className="shrink-0 font-black text-xs tracking-wide text-white font-mono bg-brand-red px-2.5 py-1 rounded-md">
                                   {order.id}
+                                </span>
+                                <span className="shrink-0 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[10px] font-bold text-slate-700">
+                                  {order.branch || 'Amsterdam'}
+                                  {sessionRole === 'branch' && (order.branch || 'Amsterdam') !== sessionBranch ? ' · gedeeld' : ''}
+                                  {Array.isArray(order.sharedWith) && order.sharedWith.length > 0 ? ` → ${order.sharedWith.join(', ')}` : ''}
                                 </span>
                                 <div className="min-w-0">
                                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -3539,6 +3660,47 @@ export default function App() {
                                     <span className="text-[10px] uppercase font-bold text-slate-400">Aantal / Oplage</span>
                                     <p className="font-bold text-slate-800">{order.clientQuantity ? `${order.clientQuantity} stuks` : '100 stuks (Standaard)'}</p>
                                   </div>
+
+                                  {(() => {
+                                    const ownBranch = order.branch || 'Amsterdam';
+                                    const canManage = isOwner || ownBranch === sessionBranch;
+                                    const shared: string[] = Array.isArray(order.sharedWith) ? order.sharedWith : [];
+                                    return (
+                                      <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <span className="text-[10px] uppercase font-bold text-slate-500">Filiaal: <strong className="text-slate-800">{ownBranch}</strong></span>
+                                          {isOwner && (
+                                            <select value={ownBranch} onChange={(e) => handleOrderBranchChange(order.id, { moveToBranch: e.target.value })} aria-label="Opdracht verplaatsen naar filiaal" className="rounded border border-slate-200 bg-slate-50 px-1.5 py-1 text-[10px] font-bold">
+                                              {BRANCHES.map((branch) => <option key={branch} value={branch}>Verplaats naar {branch}</option>)}
+                                            </select>
+                                          )}
+                                        </div>
+                                        <div className="space-y-1">
+                                          <span className="text-[10px] uppercase font-bold text-slate-500">Delen met andere filialen</span>
+                                          <div className="flex flex-wrap gap-2">
+                                            {BRANCHES.filter((branch) => branch !== ownBranch).map((branch) => (
+                                              <label key={branch} className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-bold ${shared.includes(branch) ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-slate-200 text-slate-600'}`}>
+                                                <input
+                                                  type="checkbox"
+                                                  disabled={!canManage}
+                                                  checked={shared.includes(branch)}
+                                                  onChange={(e) => handleOrderBranchChange(order.id, { sharedWith: e.target.checked ? [...shared, branch] : shared.filter((item) => item !== branch) })}
+                                                  className="h-3.5 w-3.5 accent-emerald-700"
+                                                />
+                                                {branch}
+                                              </label>
+                                            ))}
+                                          </div>
+                                          <p className="text-[10px] text-slate-400">{canManage ? 'Alleen de aangevinkte filialen kunnen deze opdracht zien.' : `Deze opdracht is door ${ownBranch} met jouw filiaal gedeeld.`}</p>
+                                        </div>
+                                        {order.order_type === 'opdrachtbon' && canManage && (
+                                          <button type="button" onClick={() => setEditingOrder(order)} className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-slate-700">
+                                            Bon aanpassen
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
 
                                   {order.order_type === 'opdrachtbon' && (
                                     <div className="space-y-2 rounded-xl border border-rose-100 bg-rose-50/50 p-3">
@@ -4182,6 +4344,7 @@ export default function App() {
                     </div>
 
                     {/* Add team member inline card */}
+                    {isOwner && (
                     <form
                       onSubmit={handleAddStaff}
                       className="bg-slate-50 border border-slate-150 p-4 rounded-xl flex flex-col md:flex-row items-end gap-3"
@@ -4198,6 +4361,18 @@ export default function App() {
                         />
                       </div>
                       
+                      <div className="w-full md:w-40 space-y-1 text-left">
+                        <label className="text-[10px] uppercase font-bold text-slate-500">Filiaal</label>
+                        <select
+                          value={staffBranchInput}
+                          onChange={(e) => setStaffBranchInput(e.target.value)}
+                          aria-label="Filiaal van de medewerker"
+                          className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-hidden bg-white text-slate-800"
+                        >
+                          {BRANCHES.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                        </select>
+                      </div>
+
                       <div className="w-full md:w-64 space-y-1 text-left">
                         <label className="text-[10px] uppercase font-bold text-slate-500">Functie / Rol</label>
                         <select
@@ -4219,6 +4394,38 @@ export default function App() {
                         Medewerker Toevoegen
                       </button>
                     </form>
+                    )}
+
+                    {isOwner && (
+                      <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-white p-4 text-left">
+                        <div>
+                          <h4 className="text-xs font-extrabold text-slate-900">Wachtwoorden per filiaal</h4>
+                          <p className="text-[11px] text-slate-500">Een filiaal logt in met zijn eigen wachtwoord en ziet alleen de eigen opdrachten en de opdrachten die met dat filiaal zijn gedeeld. Jij ziet als beheerder alles.</p>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          {BRANCHES.map((branch) => (
+                            <div key={branch} className="space-y-1">
+                              <label className="flex items-center justify-between text-[10px] font-bold uppercase text-slate-500">
+                                <span>{branch}</span>
+                                <span className={branchPasswordSet[branch] ? 'text-emerald-700' : 'text-amber-700'}>{branchPasswordSet[branch] ? 'ingesteld' : 'nog niet ingesteld'}</span>
+                              </label>
+                              <div className="flex gap-1">
+                                <input
+                                  type="password"
+                                  autoComplete="new-password"
+                                  placeholder="Nieuw wachtwoord (min. 8)"
+                                  value={branchPasswords[branch] || ''}
+                                  onChange={(e) => setBranchPasswords((current) => ({ ...current, [branch]: e.target.value }))}
+                                  className="min-w-0 flex-1 rounded-lg border border-slate-200 p-2 text-xs"
+                                />
+                                <button type="button" onClick={() => saveBranchPassword(branch)} className="shrink-0 rounded-lg bg-slate-900 px-3 py-2 text-[11px] font-bold text-white hover:bg-slate-700">Opslaan</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {branchPasswordMessage && <p role="status" className="text-xs font-semibold text-slate-700">{branchPasswordMessage}</p>}
+                      </div>
+                    )}
 
                     {staffError && (
                       <p className="text-xs text-rose-600 font-semibold mt-2 text-left">{staffError}</p>
@@ -4230,6 +4437,7 @@ export default function App() {
                         <thead>
                           <tr className="bg-slate-50 text-[10px] uppercase font-extrabold tracking-wider text-slate-400 border-b border-slate-200">
                             <th className="py-3 px-4">Operator Naam</th>
+                            <th className="py-3 px-4">Filiaal</th>
                             <th className="py-3 px-4">Functie</th>
                             <th className="py-3 px-4">Actieve Taken / Orders</th>
                             <th className="py-3 px-4 text-center">Actie</th>
@@ -4238,7 +4446,7 @@ export default function App() {
                         <tbody>
                           {staffList.length === 0 ? (
                             <tr>
-                              <td colSpan={4} className="py-8 text-center text-xs text-slate-400 font-sans italic">
+                              <td colSpan={5} className="py-8 text-center text-xs text-slate-400 font-sans italic">
                                 Geen medewerkers geconfigureerd. Voeg hierboven uw eerste teamlid toe.
                               </td>
                             </tr>
@@ -4255,6 +4463,7 @@ export default function App() {
                                     </div>
                                     {st.name}
                                   </td>
+                                  <td className="py-3 px-4 text-[11px] font-semibold text-slate-700">{st.branch || '—'}</td>
                                   <td className="py-3 px-4">
                                     <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-105 text-slate-700 max-w-fit border">
                                       {st.role}
@@ -4281,14 +4490,14 @@ export default function App() {
                                     )}
                                   </td>
                                   <td className="py-3 px-4 text-center">
-                                    <button
+                                    {isOwner && <button
                                       type="button"
                                       onClick={() => handleDeleteStaff(st.id)}
                                       className="p-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-red-655 rounded-lg transition-colors cursor-pointer"
                                       title="Operator Verwijderen"
                                     >
                                       <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
+                                    </button>}
                                   </td>
                                 </tr>
                               );
@@ -4724,6 +4933,14 @@ export default function App() {
                       {submissionError}
                     </div>
                   )}
+
+                  <div className="space-y-1 text-xs font-sans">
+                    <label className="font-bold text-slate-700 block">Filiaal <span className="text-rose-500">*</span></label>
+                    <select required value={clientBranch} onChange={(e) => setClientBranch(e.target.value)} className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800">
+                      <option value="">— kies filiaal —</option>
+                      {BRANCHES.map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                  </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs font-sans">
                     <div className="space-y-1">

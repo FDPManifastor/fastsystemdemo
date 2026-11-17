@@ -129,9 +129,40 @@ function ensureAdminPasswordConfigured() {
   }
 }
 
-async function createAdminSession() {
+type AsyncHandler = (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>;
+
+function asyncRoute(handler: AsyncHandler): express.RequestHandler {
+  return (req, res, next) => {
+    handler(req, res, next).catch(next);
+  };
+}
+
+const BRANCHES = ["Amsterdam", "Utrecht", "Hoogvliet"] as const;
+const DEFAULT_BRANCH = "Amsterdam";
+const isBranch = (value: unknown): value is string => typeof value === "string" && (BRANCHES as readonly string[]).includes(value);
+
+function hashPassword(password: string) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, 32);
+  return `scrypt$${salt.toString("hex")}$${hash.toString("hex")}`;
+}
+
+function verifyPassword(password: string, stored: string | null) {
+  if (!stored) return false;
+  const [scheme, saltHex, hashHex] = stored.split("$");
+  if (scheme !== "scrypt" || !saltHex || !hashHex) return false;
+  const expected = Buffer.from(hashHex, "hex");
+  const actual = crypto.scryptSync(password, Buffer.from(saltHex, "hex"), expected.length);
+  return crypto.timingSafeEqual(actual, expected);
+}
+
+type SessionInfo = { sessionId: string; role: "admin" | "branch"; branch: string };
+const sessionRoleKey = (sessionId: string) => `sessrole:${crypto.createHash("sha256").update(sessionId).digest("hex")}`;
+
+async function createAdminSession(role: "admin" | "branch" = "admin", branch = "") {
   const sessionId = crypto.randomBytes(32).toString("hex");
   await storage.createSession(sessionId, Date.now() + ADMIN_SESSION_TTL_MS);
+  await storage.setMeta(sessionRoleKey(sessionId), role === "admin" ? "admin" : `branch:${branch}`);
   return sessionId;
 }
 
@@ -144,23 +175,38 @@ async function getAdminSession(req: express.Request) {
   return valid ? sessionId : null;
 }
 
-type AsyncHandler = (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>;
-
-function asyncRoute(handler: AsyncHandler): express.RequestHandler {
-  return (req, res, next) => {
-    handler(req, res, next).catch(next);
-  };
+/** Wie is ingelogd? Sessies zonder rolgegevens zijn van vóór de filialen en gelden als beheerder. */
+async function getSessionInfo(req: express.Request): Promise<SessionInfo | null> {
+  const sessionId = await getAdminSession(req);
+  if (!sessionId) return null;
+  const raw = await storage.getMeta(sessionRoleKey(sessionId));
+  if (raw && raw.startsWith("branch:") && isBranch(raw.slice(7))) return { sessionId, role: "branch", branch: raw.slice(7) };
+  return { sessionId, role: "admin", branch: "" };
 }
+
+const orderBranch = (order: any) => (isBranch(order?.branch) ? order.branch : DEFAULT_BRANCH);
+/** Beheerder ziet alles; een filiaal ziet eigen orders en orders die met dat filiaal zijn gedeeld. */
+const canSeeOrder = (order: any, info: SessionInfo) =>
+  info.role === "admin" || orderBranch(order) === info.branch || (Array.isArray(order?.sharedWith) && order.sharedWith.includes(info.branch));
+/** Aanpassen, delen en verplaatsen mag alleen de beheerder of het filiaal waar de order thuishoort. */
+const canManageOrder = (order: any, info: SessionInfo) => info.role === "admin" || orderBranch(order) === info.branch;
 
 const requireAdmin = asyncRoute(async (req, res, next) => {
   if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12) {
     return res.status(503).json({ error: "Admin authentication is not configured." });
   }
+  const info = await getSessionInfo(req);
+  if (!info) return res.status(401).json({ error: "Not authorized." });
+  if (info.role !== "admin") return res.status(403).json({ error: "Alleen de beheerder mag dit." });
+  res.locals.session = info;
+  return next();
+});
 
-  if (!(await getAdminSession(req))) {
-    return res.status(401).json({ error: "Not authorized." });
-  }
-
+/** Elke ingelogde medewerker (beheerder of filiaal). */
+const requireStaffSession = asyncRoute(async (req, res, next) => {
+  const info = await getSessionInfo(req);
+  if (!info) return res.status(401).json({ error: "Not authorized." });
+  res.locals.session = info;
   return next();
 });
 
@@ -431,7 +477,7 @@ async function startServer() {
     }
   }
 
-  async function createOrder(data: any, assignedStaff?: string, allowTicketFields = false) {
+  async function createOrder(data: any, assignedStaff?: string, allowTicketFields = false, branch?: unknown) {
     const safeData = sanitizeOrderData(data, allowTicketFields);
     if (!safeData) return null;
 
@@ -459,6 +505,8 @@ async function startServer() {
       id: `FD-${crypto.randomBytes(5).toString("hex").toUpperCase()}`,
       ...safeData,
       ...(assignedStaff ? { assignedStaff } : {}),
+      branch: isBranch(branch) ? branch : DEFAULT_BRANCH,
+      sharedWith: [],
       trackingToken: crypto.randomBytes(24).toString("hex"),
       createdAt: now,
       status: "Ingediend",
@@ -525,16 +573,26 @@ async function startServer() {
   }));
 
   app.post("/api/auth/login", rateLimit(AUTH_RATE_LIMIT_MAX_REQUESTS), asyncRoute(async (req, res) => {
-    if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12) {
-      return res.status(503).json({ error: "Admin auth is not configured." });
-    }
-
     const submittedPassword = typeof req.body?.password === "string" ? req.body.password : "";
-    if (!safeCompare(submittedPassword, ADMIN_PASSWORD)) {
-      return res.status(401).json({ error: "Invalid password." });
+    const requestedBranch = req.body?.branch;
+    let sessionId: string;
+
+    if (isBranch(requestedBranch)) {
+      // Filiaal-login: elk filiaal heeft een eigen wachtwoord dat de beheerder instelt.
+      const stored = await storage.getMeta(`branchpw:${requestedBranch}`);
+      if (!stored) return res.status(401).json({ error: "Voor dit filiaal is nog geen wachtwoord ingesteld. Vraag de beheerder." });
+      if (!submittedPassword || !verifyPassword(submittedPassword, stored)) return res.status(401).json({ error: "Invalid password." });
+      sessionId = await createAdminSession("branch", requestedBranch);
+    } else {
+      if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12) {
+        return res.status(503).json({ error: "Admin auth is not configured." });
+      }
+      if (!safeCompare(submittedPassword, ADMIN_PASSWORD)) {
+        return res.status(401).json({ error: "Invalid password." });
+      }
+      sessionId = await createAdminSession("admin");
     }
 
-    const sessionId = await createAdminSession();
     res.cookie("fd_admin_session", sessionId, {
       httpOnly: true,
       sameSite: "lax",
@@ -543,7 +601,7 @@ async function startServer() {
       maxAge: ADMIN_SESSION_TTL_MS,
     });
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, role: isBranch(requestedBranch) ? "branch" : "admin", branch: isBranch(requestedBranch) ? requestedBranch : "" });
   }));
 
   app.post("/api/auth/logout", asyncRoute(async (req, res) => {
@@ -551,6 +609,7 @@ async function startServer() {
     const sessionId = cookies.fd_admin_session;
     if (sessionId) {
       await storage.deleteSession(sessionId);
+      if (/^[a-f0-9]{64}$/.test(sessionId)) await storage.setMeta(sessionRoleKey(sessionId), "");
     }
 
     res.clearCookie("fd_admin_session", { path: "/", httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" });
@@ -558,24 +617,40 @@ async function startServer() {
   }));
 
   app.get("/api/auth/session", asyncRoute(async (req, res) => {
-    const authenticated = Boolean(await getAdminSession(req));
-    return res.json({ authenticated });
+    const info = await getSessionInfo(req);
+    return res.json({ authenticated: Boolean(info), role: info?.role ?? null, branch: info?.branch ?? "", branches: BRANCHES });
   }));
 
-  app.get("/api/staff", requireAdmin, asyncRoute(async (req, res) => {
-    res.json(await storage.listStaff());
+  app.get("/api/staff", requireStaffSession, asyncRoute(async (req, res) => {
+    const info = res.locals.session as SessionInfo;
+    const staff = await storage.listStaff();
+    // Een filiaal ziet alleen de eigen medewerkers (en medewerkers die nog geen filiaal hebben).
+    res.json(info.role === "admin" ? staff : staff.filter((member) => !member.branch || member.branch === info.branch));
+  }));
+
+  // Namen voor het keuzemenu "Geholpen door" op de opdrachtbon (geen inlog nodig; alleen namen per filiaal).
+  app.get("/api/public/staff", asyncRoute(async (req, res) => {
+    const branch = req.query.branch;
+    if (!isBranch(branch)) return res.status(400).json({ error: "Kies een filiaal." });
+    const staff = await storage.listStaff();
+    res.json({ names: staff.filter((member) => !member.branch || member.branch === branch).map((member) => member.name) });
   }));
 
   app.post("/api/staff", requireAdmin, asyncRoute(async (req, res) => {
     const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
     const role = typeof req.body?.role === "string" ? req.body.role.trim() : "";
+    const branch = req.body?.branch;
     if (!name || !role || name.length > 200 || role.length > 200) {
       return res.status(400).json({ error: "Naam en rol zijn verplicht." });
+    }
+    if (!isBranch(branch)) {
+      return res.status(400).json({ error: "Kies een filiaal voor deze medewerker." });
     }
     const newMember = {
       id: `S-${crypto.randomBytes(4).toString("hex").toUpperCase()}`,
       name,
-      role
+      role,
+      branch
     };
     await storage.addStaff(newMember);
     res.json(newMember);
@@ -586,24 +661,44 @@ async function startServer() {
     res.json({ success: true });
   }));
 
-  app.get("/api/orders", requireAdmin, asyncRoute(async (req, res) => {
-    res.json((await storage.listOrders()).map(serializeAdminOrder));
+  app.get("/api/admin/branches", requireAdmin, asyncRoute(async (req, res) => {
+    const branches = await Promise.all(BRANCHES.map(async (branch) => ({ branch, passwordSet: Boolean(await storage.getMeta(`branchpw:${branch}`)) })));
+    res.json({ branches });
   }));
 
-  app.get("/api/admin/orders", requireAdmin, asyncRoute(async (req, res) => {
-    res.json((await storage.listOrders()).map(serializeAdminOrder));
+  app.put("/api/admin/branches/:branch/password", requireAdmin, asyncRoute(async (req, res) => {
+    const branch = req.params.branch;
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!isBranch(branch)) return res.status(404).json({ error: "Onbekend filiaal." });
+    if (password.length < 8 || password.length > 100) return res.status(400).json({ error: "Het wachtwoord moet 8 tot 100 tekens zijn." });
+    await storage.setMeta(`branchpw:${branch}`, hashPassword(password));
+    res.json({ success: true });
   }));
 
-  app.get("/api/orders/:id", requireAdmin, asyncRoute(async (req, res) => {
+  const visibleOrders = async (info: SessionInfo) => (await storage.listOrders()).filter((order) => canSeeOrder(order, info)).map(serializeAdminOrder);
+
+  app.get("/api/orders", requireStaffSession, asyncRoute(async (req, res) => {
+    res.json(await visibleOrders(res.locals.session));
+  }));
+
+  app.get("/api/admin/orders", requireStaffSession, asyncRoute(async (req, res) => {
+    res.json(await visibleOrders(res.locals.session));
+  }));
+
+  app.get("/api/orders/:id", requireStaffSession, asyncRoute(async (req, res) => {
     const order = await storage.getOrder(req.params.id);
-    if (!order) {
+    if (!order || !canSeeOrder(order, res.locals.session)) {
       return res.status(404).json({ error: "Order not found." });
     }
     res.json(serializeAdminOrder(order));
   }));
 
-  app.get("/api/orders/:id/files/:fileId", requireAdmin, asyncRoute(async (req, res) => {
+  app.get("/api/orders/:id/files/:fileId", requireStaffSession, asyncRoute(async (req, res) => {
     if (!/^[a-f0-9]{24}$/.test(req.params.fileId)) {
+      return res.status(404).json({ error: "File not found." });
+    }
+    const order = await storage.getOrder(req.params.id);
+    if (!order || !canSeeOrder(order, res.locals.session)) {
       return res.status(404).json({ error: "File not found." });
     }
 
@@ -665,7 +760,13 @@ async function startServer() {
           ? ""
           : `Betaling is op de bon ingevuld zonder inlog (${paymentStatus.toLowerCase()}, aanbetaling € ${claimedPrepayment.toFixed(2).replace(".", ",")}). Controleer dit in de backoffice.`,
       };
-      const created = await createOrder(ticketOrder, undefined, true);
+      const ticketBranch = isBranch(orderData.branch) ? orderData.branch : null;
+      if (!ticketBranch) return res.status(400).json({ error: "Kies het filiaal waar de bon wordt gemaakt." });
+      const branchStaff = (await storage.listStaff()).filter((member) => !member.branch || member.branch === ticketBranch).map((member) => member.name);
+      if (!ticketOrder.assisted_by || (branchStaff.length > 0 && !branchStaff.includes(ticketOrder.assisted_by))) {
+        return res.status(400).json({ error: "Kies de medewerker die de klant heeft geholpen." });
+      }
+      const created = await createOrder(ticketOrder, undefined, true, ticketBranch);
       if (!created) return res.status(400).json({ error: "Invalid order data." });
       return res.status(201).json({
         success: true,
@@ -675,17 +776,20 @@ async function startServer() {
       });
     }
 
-    const created = await createOrder(orderData);
+    const created = await createOrder(orderData, undefined, false, isBranch(orderData?.branch) ? orderData.branch : DEFAULT_BRANCH);
     if (!created) return res.status(400).json({ error: "Invalid order data." });
     return res.status(201).json({ success: true, orderId: created.order.id, trackingToken: created.order.trackingToken });
   }));
 
-  app.post("/api/admin/orders", requireAdmin, asyncRoute(async (req, res) => {
+  app.post("/api/admin/orders", requireStaffSession, asyncRoute(async (req, res) => {
+    const info = res.locals.session as SessionInfo;
     const orderData = req.body?.orderData;
+    // Een filiaal maakt altijd orders voor het eigen filiaal; de beheerder kiest zelf.
+    const newBranch = info.role === "branch" ? info.branch : isBranch(orderData?.branch) ? orderData.branch : DEFAULT_BRANCH;
     const assignedStaff = typeof orderData?.assignedStaff === "string" ? orderData.assignedStaff.trim() : "";
     const staffExists = !assignedStaff || (await storage.listStaff()).some((member) => member.name === assignedStaff);
     if (!staffExists) return res.status(400).json({ error: "Invalid staff assignment." });
-    const created = await createOrder(orderData, assignedStaff || undefined, true);
+    const created = await createOrder(orderData, assignedStaff || undefined, true, newBranch);
     if (!created) return res.status(400).json({ error: "Invalid order data." });
     return res.status(201).json({
       success: true,
@@ -695,8 +799,35 @@ async function startServer() {
     });
   }));
 
-  app.put("/api/orders/:id", requireAdmin, asyncRoute(async (req, res) => {
-    const { status, note, assignedStaff, payment } = req.body || {};
+  app.put("/api/orders/:id", requireStaffSession, asyncRoute(async (req, res) => {
+    const info = res.locals.session as SessionInfo;
+    const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit } = req.body || {};
+    const current = await storage.getOrder(req.params.id);
+    if (!current || !canSeeOrder(current, info)) return res.status(404).json({ error: "Order not found." });
+    if ((sharedWith !== undefined || moveToBranch !== undefined || edit !== undefined) && !canManageOrder(current, info)) {
+      return res.status(403).json({ error: "Alleen het filiaal van deze opdracht of de beheerder kan dit aanpassen." });
+    }
+    if (sharedWith !== undefined && (!Array.isArray(sharedWith) || sharedWith.length > BRANCHES.length || !sharedWith.every(isBranch))) {
+      return res.status(400).json({ error: "Ongeldige filialen om mee te delen." });
+    }
+    if (moveToBranch !== undefined && (info.role !== "admin" || !isBranch(moveToBranch))) {
+      return res.status(403).json({ error: "Alleen de beheerder kan een opdracht naar een ander filiaal verplaatsen." });
+    }
+    let editData: Record<string, unknown> | null = null;
+    let editedProducts: any[] | null = null;
+    if (edit !== undefined) {
+      if (current.order_type !== "opdrachtbon") return res.status(400).json({ error: "Alleen opdrachtbonnen kunnen zo worden aangepast." });
+      const incoming = (() => { try { return JSON.parse(String(edit?.orderData?.products_json)); } catch { return null; } })();
+      editData = sanitizeOrderData({ ...edit?.orderData, order_type: "opdrachtbon" }, true);
+      if (!editData || !Array.isArray(incoming)) return res.status(400).json({ error: "Ongeldige opdrachtbon." });
+      const oldProducts: any[] = (() => { try { return JSON.parse(String(current.products_json)); } catch { return []; } })();
+      const cleaned: any[] = JSON.parse(String(editData.products_json));
+      // Bestaande productregels houden hun id en uploadlink; nieuwe regels krijgen er een.
+      editedProducts = cleaned.map((product, index) => {
+        const previous = oldProducts.find((item) => item?.id && item.id === incoming[index]?.id);
+        return { ...product, id: previous?.id ?? crypto.randomBytes(12).toString("hex"), uploadToken: previous?.uploadToken ?? crypto.randomBytes(24).toString("hex") };
+      });
+    }
     if (payment !== undefined) {
       const okAction = payment && typeof payment === "object" && (
         (payment.action === "set-prepayment" && typeof payment.amount === "number" && Number.isFinite(payment.amount) && payment.amount >= 0 && payment.amount <= 1000000000) ||
@@ -750,6 +881,35 @@ async function startServer() {
           date: new Date().toISOString(),
           status: status || order.status || "Betaling",
           note: paymentNote
+        });
+      }
+
+      if (sharedWith !== undefined) {
+        const own = orderBranch(order);
+        order.sharedWith = (sharedWith as string[]).filter((branch, index, all) => branch !== own && all.indexOf(branch) === index);
+        order.history.push({
+          date: new Date().toISOString(),
+          status: order.status || "Gedeeld",
+          note: order.sharedWith.length ? `Opdracht gedeeld met: ${order.sharedWith.join(", ")}.` : "Delen van de opdracht gestopt."
+        });
+      }
+
+      if (moveToBranch !== undefined) {
+        order.branch = moveToBranch;
+        order.sharedWith = (Array.isArray(order.sharedWith) ? order.sharedWith : []).filter((branch: string) => branch !== moveToBranch);
+        order.history.push({ date: new Date().toISOString(), status: order.status || "Verplaatst", note: `Opdracht verplaatst naar filiaal ${moveToBranch}.` });
+      }
+
+      if (editData && editedProducts) {
+        for (const [key, value] of Object.entries(editData)) {
+          if (key === "products_json") continue;
+          (order as any)[key] = value;
+        }
+        (order as any).products_json = JSON.stringify(editedProducts);
+        order.history.push({
+          date: new Date().toISOString(),
+          status: order.status || "Aangepast",
+          note: `Opdrachtbon aangepast${info.role === "branch" ? ` (${info.branch})` : " door de beheerder"}.`
         });
       }
 

@@ -14,7 +14,7 @@ import pg from "pg";
  */
 
 export type Order = Record<string, any>;
-export type StaffMember = { id: string; name: string; role: string };
+export type StaffMember = { id: string; name: string; role: string; branch?: string };
 export type NewFile = { id: string; fileName: string; fileType: string; dataUrl: string };
 export type StoredFileData = { fileName: string; fileType: string; data: Buffer };
 export type OrderChanges = { addFiles?: NewFile[]; removeFileIds?: string[] };
@@ -148,6 +148,8 @@ class PostgresStorage implements Storage {
         role TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+
+      ALTER TABLE staff ADD COLUMN IF NOT EXISTS branch TEXT NOT NULL DEFAULT '';
 
       CREATE TABLE IF NOT EXISTS admin_sessions (
         id_hash TEXT PRIMARY KEY,
@@ -303,12 +305,12 @@ class PostgresStorage implements Storage {
   }
 
   async listStaff() {
-    const result = await this.pool.query("SELECT id, name, role FROM staff ORDER BY created_at, id");
+    const result = await this.pool.query("SELECT id, name, role, branch FROM staff ORDER BY created_at, id");
     return result.rows as StaffMember[];
   }
 
   async addStaff(member: StaffMember) {
-    await this.pool.query("INSERT INTO staff (id, name, role) VALUES ($1, $2, $3)", [member.id, member.name, member.role]);
+    await this.pool.query("INSERT INTO staff (id, name, role, branch) VALUES ($1, $2, $3, $4)", [member.id, member.name, member.role, member.branch || ""]);
   }
 
   async deleteStaff(id: string) {
