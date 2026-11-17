@@ -339,6 +339,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const [error, setError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [createdTicket, setCreatedTicket] = useState<CreatedTicket | null>(null);
+  const [specOpenIndex, setSpecOpenIndex] = useState<number | null>(null);
   const [calculatorIndex, setCalculatorIndex] = useState<number | null>(null);
   const [prepressIndex, setPrepressIndex] = useState<number | null>(null);
   const [uploadStates, setUploadStates] = useState<Record<number, 'uploading' | 'done' | 'error'>>({});
@@ -1340,6 +1341,18 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                     ariaLabel={`Omschrijving regel ${index + 1}`}
                     className={lineInput}
                   />
+                  {specOpenIndex !== index && (
+                    <button type="button" onClick={() => setSpecOpenIndex(index)} className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-dashed border-slate-300 bg-white px-2.5 py-1 text-xs font-bold text-slate-600 hover:bg-slate-50">
+                      <Calculator className="h-3.5 w-3.5" /> Product berekenen (eigen formaat)
+                      {line.width && line.height && line.description && <span className="font-semibold text-slate-400">· {line.width} × {line.height} mm · {line.printSides === 'double' ? 'dubbelzijdig' : 'enkelzijdig'}</span>}
+                    </button>
+                  )}
+                  {specOpenIndex === index && (
+                  <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                  <div className="flex items-center justify-between text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                    <span>Product berekenen</span>
+                    <button type="button" onClick={() => setSpecOpenIndex(null)} className="rounded px-2 py-0.5 normal-case tracking-normal text-slate-600 hover:bg-slate-200">Sluiten ✕</button>
+                  </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
                     <select value={line.productId} onChange={(event) => handleProductChange(index, event.target.value)} aria-label={`Productsoort regel ${index + 1}`} className="rounded border border-slate-200 bg-slate-50 px-1.5 py-1 text-xs">
                       {!products.some((product) => product.id === line.productId) && <option value={line.productId}>Eigen formaat</option>}
@@ -1362,6 +1375,10 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                         <Calculator className="h-3.5 w-3.5" /> {calculatorKindFor(line) === 'banner' ? 'Banner berekenen' : 'Formaat en prijs berekenen'}
                       </button>
                     )}
+                  </div>
+                  </div>
+                  )}
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
                     {line.file ? (
                       <span className="inline-flex min-w-0 items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 py-0.5 pl-0.5 pr-1">
                         <FileThumb file={line.file} fileName={line.file.name} size={30} />
