@@ -6,6 +6,7 @@ import { createServer as createViteServer } from "vite";
 import { createStorage, type NewFile, type Order } from "./storage";
 import { createCatalog } from "./catalog";
 import { createProjectMap } from "./projectMap";
+import { calculateTshirtPrice, parseTshirtSpec } from "./src/utils/tshirtPricing";
 
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
@@ -376,7 +377,7 @@ async function startServer() {
     "selectedProductId", "selectedProductName", "selectedProductCategory", "customWidth", "customHeight",
     "printSides", "imageSrcUrl", "backImageSrcUrl", "frontRotationDegrees", "backRotationDegrees",
     "frontFitMode", "backFitMode", "frontFileName", "backFileName", "frontPixelWidth", "frontPixelHeight",
-    "backPixelWidth", "backPixelHeight", "frontComputedDpi", "backComputedDpi"
+    "backPixelWidth", "backPixelHeight", "frontComputedDpi", "backComputedDpi", "tshirt_json"
   ];
   const ticketOrderFields = [
     "order_type", "order_number", "contact_person", "client_address", "client_postcode_city", "delivery_date", "delivery_method", "delivery_address",
@@ -433,9 +434,9 @@ async function startServer() {
       "clientPhone", "clientReference", "clientComments", "selectedProductId", "selectedProductName",
       "selectedProductCategory", "frontFileName", "backFileName", "frontFitMode", "backFitMode",
       "order_type", "order_number", "contact_person", "client_address", "client_postcode_city", "delivery_date", "delivery_method", "delivery_address",
-      "assisted_by", "order_status", "payment_status", "products_json", "notes", "internal_notes"
+      "assisted_by", "order_status", "payment_status", "products_json", "notes", "internal_notes", "tshirt_json"
     ]) {
-      const maxLength = field === "products_json" ? 50000 : 2000;
+      const maxLength = field === "products_json" ? 50000 : field === "tshirt_json" ? 10000 : 2000;
       if (safeData[field] !== undefined && (typeof safeData[field] !== "string" || String(safeData[field]).length > maxLength)) return null;
     }
     if (safeData.order_type !== undefined && safeData.order_type !== "opdrachtbon") return null;
@@ -512,10 +513,54 @@ async function startServer() {
         return null;
       }
     }
+    if (safeData.tshirt_json !== undefined) {
+      // T-shirt (DTF) van de klantpagina: spec controleren en de prijs zelf narekenen.
+      const tshirt = normalizeTshirtOrder(safeData.tshirt_json, safeData);
+      if (!tshirt) return null;
+      safeData.tshirt_json = tshirt;
+    }
     if ((safeData.customWidth !== undefined && Number(safeData.customWidth) <= 0) || (safeData.customHeight !== undefined && Number(safeData.customHeight) <= 0)) return null;
     safeData.clientName = data.clientName.trim();
     safeData.clientEmail = data.clientEmail.trim().toLowerCase();
     return safeData;
+  }
+
+  function normalizeTshirtOrder(value: unknown, safeData: Record<string, unknown>): string | null {
+    let raw: any;
+    try {
+      raw = JSON.parse(String(value));
+    } catch {
+      return null;
+    }
+    const spec = parseTshirtSpec(raw?.spec);
+    if (!spec) return null;
+    const price = calculateTshirtPrice(spec);
+    if (!price.valid) return null;
+    // Elke bedrukte kant moet een afbeelding hebben (A-zijde, en bij twee kanten ook de B-zijde).
+    if (!safeData.imageSrcUrl || (spec.prints.length === 2 && !safeData.backImageSrcUrl)) return null;
+    const sides: Record<string, unknown> = {};
+    for (const print of spec.prints) {
+      const side = raw?.sides?.[print.side];
+      if (!side || typeof side !== "object") return null;
+      const number = (input: unknown, max: number) => (typeof input === "number" && Number.isFinite(input) && input >= 0 && input <= max ? input : 0);
+      sides[print.side] = {
+        format: print.format,
+        fileName: typeof side.fileName === "string" ? side.fileName.slice(0, 200) : "",
+        pixelWidth: number(side.pixelWidth, 100000),
+        pixelHeight: number(side.pixelHeight, 100000),
+        printedWidthMm: number(side.printedWidthMm, 1000),
+        printedHeightMm: number(side.printedHeightMm, 1000),
+        dpi: number(side.dpi, 100000),
+        scale: number(side.scale, 1),
+        offsetX: number(side.offsetX, 1),
+        offsetY: number(side.offsetY, 1),
+        check: ["ok", "warning", "error"].includes(side.check) ? side.check : "warning",
+        checkNotes: Array.isArray(side.checkNotes) ? side.checkNotes.filter((note: unknown) => typeof note === "string").slice(0, 5).map((note: string) => note.slice(0, 300)) : [],
+      };
+    }
+    safeData.clientQuantity = price.quantity;
+    safeData.selectedProductCategory = "T-shirt";
+    return JSON.stringify({ spec, sides, total: price.total, perShirt: price.perShirt, description: price.description, source: price.source, lines: price.lines });
   }
 
   function findProductUpload(order: Order, uploadToken: string) {

@@ -17,6 +17,7 @@ import {
   readFileAsDataUrl,
   useCatalog,
 } from './ticket/TicketTools';
+import { TshirtApplied, TshirtCalculatorPanel } from './tshirt/TshirtCalculatorPanel';
 
 interface TicketStaff {
   id: string;
@@ -111,9 +112,10 @@ const ORDER_STATUSES = [
   'Geannuleerd',
 ];
 
-/** Welke calculator hoort bij dit product? Alleen stickers en banners hebben er een. */
-const calculatorKindFor = (line: { description: string; category: string }): 'sticker' | 'banner' | null => {
+/** Welke calculator hoort bij dit product? Stickers, banners en T-shirts (DTF) hebben er een. */
+const calculatorKindFor = (line: { description: string; category: string }): 'sticker' | 'banner' | 'tshirt' | null => {
   const text = `${line.description} ${line.category}`.toLowerCase();
+  if (/t-?shirt|\bdtf\b|textiel ?bedrukking/.test(text)) return 'tshirt';
   if (/sticker|vinyl|raamfolie/.test(text)) return 'sticker';
   if (/banner|roll-?up|spandoek|beachflag|frame ?banner/.test(text)) return 'banner';
   return null;
@@ -415,6 +417,24 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       width: String(applied.widthMm),
       height: String(applied.heightMm),
       printSides: 'single',
+      quantity: String(applied.quantity),
+      price: (applied.result.total / applied.quantity).toFixed(2).replace('.', ','),
+      vatIncluded: true,
+      fixedTotal: applied.result.total,
+      sku: '',
+      priceSource: applied.result.source,
+    });
+    setCalculatorIndex(null);
+  };
+
+  const applyTshirt = (lineIndex: number, applied: TshirtApplied) => {
+    updateLine(lineIndex, {
+      description: applied.result.description,
+      productId: '',
+      category: 'T-shirt',
+      width: String(applied.widthMm),
+      height: String(applied.heightMm),
+      printSides: applied.printSides,
       quantity: String(applied.quantity),
       price: (applied.result.total / applied.quantity).toFixed(2).replace('.', ','),
       vatIncluded: true,
@@ -1437,7 +1457,12 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     {calculatorKindFor(line) && (
                       <button type="button" onClick={() => setCalculatorIndex(calculatorIndex === index ? null : index)} aria-expanded={calculatorIndex === index} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
-                        <Calculator className="h-3.5 w-3.5" /> {calculatorKindFor(line) === 'banner' ? 'Banner berekenen' : 'Formaat en prijs berekenen'}
+                        <Calculator className="h-3.5 w-3.5" /> {calculatorKindFor(line) === 'banner' ? 'Banner berekenen' : calculatorKindFor(line) === 'tshirt' ? 'T-shirt berekenen' : 'Formaat en prijs berekenen'}
+                      </button>
+                    )}
+                    {calculatorKindFor(line) !== 'tshirt' && (
+                      <button type="button" onClick={() => { updateLine(index, { description: line.description || 'T-shirt DTF', category: 'T-shirt' }); setCalculatorIndex(index); }} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
+                        <Calculator className="h-3.5 w-3.5" /> T-shirt (DTF)
                       </button>
                     )}
                   </div>
@@ -1537,9 +1562,12 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                   </div>
                 )}
 
-                {calculatorIndex === index && calculatorKindFor(line) && (
+                {calculatorIndex === index && calculatorKindFor(line) === 'tshirt' && (
+                  <TshirtCalculatorPanel onApply={(applied) => applyTshirt(index, applied)} onClose={() => setCalculatorIndex(null)} />
+                )}
+                {calculatorIndex === index && (calculatorKindFor(line) === 'sticker' || calculatorKindFor(line) === 'banner') && (
                   <PriceCalculatorPanel
-                    initialKind={calculatorKindFor(line) ?? 'sticker'}
+                    initialKind={calculatorKindFor(line) === 'banner' ? 'banner' : 'sticker'}
                     lockKind
                     onApply={(applied) => applyCalculator(index, applied)}
                     onClose={() => setCalculatorIndex(null)}
