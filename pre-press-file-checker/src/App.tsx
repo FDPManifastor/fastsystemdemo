@@ -47,6 +47,7 @@ import { FDLogo } from './components/FDLogo';
 import { renderPdfFile } from './utils/pdfLoader';
 // Zware onderdelen worden pas geladen als ze nodig zijn, zodat de eerste pagina sneller opent.
 const OrderTicketWorkspace = lazy(() => import('./components/OrderTicketWorkspace'));
+const BackofficeOverview = lazy(() => import('./components/BackofficeOverview'));
 const TicketProductUploadPortal = lazy(() => import('./components/TicketProductUploadPortal'));
 const ImpositionModal = lazy(() => import('./components/ImpositionModal'));
 const lazyFallback = <div className="p-6 text-center text-sm text-slate-500" role="status">Laden…</div>;
@@ -273,14 +274,17 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [adminCategoryFilter, setAdminCategoryFilter] = useState<string>('All');
   const startedOnTicketRoute = window.location.pathname.replace(/\/+$/, '') === '/opdrachtbon';
-  const [adminSubTab, setAdminSubTabState] = useState<'files' | 'orders' | 'staff' | 'create_order'>(() => {
+  const [adminSubTab, setAdminSubTabState] = useState<'overview' | 'files' | 'orders' | 'staff' | 'create_order'>(() => {
     try {
       const saved = window.sessionStorage.getItem('fd_admin_tab');
       if (startedOnTicketRoute) return 'create_order';
-      return saved === 'orders' || saved === 'staff' || saved === 'create_order' || saved === 'files' ? saved : 'files';
-    } catch { return 'files'; }
+      return saved === 'orders' || saved === 'staff' || saved === 'create_order' || saved === 'files' || saved === 'overview' ? saved : 'overview';
+    } catch { return 'overview'; }
   });
-  const setAdminSubTab = (tab: 'files' | 'orders' | 'staff' | 'create_order') => {
+  useEffect(() => {
+    if (isAdminAuthenticated && sessionRole !== 'admin' && adminSubTab === 'staff') setAdminSubTabState('overview');
+  }, [isAdminAuthenticated, sessionRole, adminSubTab]);
+  const setAdminSubTab = (tab: 'overview' | 'files' | 'orders' | 'staff' | 'create_order') => {
     setAdminSubTabState(tab);
     try { window.sessionStorage.setItem('fd_admin_tab', tab); } catch { /* geen opslag */ }
   };
@@ -977,6 +981,7 @@ export default function App() {
       setSessionBranch(typeof loggedIn.branch === 'string' ? loggedIn.branch : '');
       setIsAdminAuthenticated(true);
       setAdminPasswordInput('');
+      setAdminSubTab('overview');
       fetch('/api/auth/session', { credentials: 'include' }).then((r) => r.json()).then((data) => {
         setSessionPerms(Array.isArray(data.permissions) ? data.permissions : []);
         setSessionStaffName(typeof data.staffName === 'string' ? data.staffName : '');
@@ -2426,10 +2431,10 @@ export default function App() {
                   
                   <div className="space-y-1.5">
                     <h3 className="font-extrabold text-lg sm:text-xl text-white group-hover:text-slate-200 transition-colors">
-                      Beheerders (Backoffice)
+                      FD Werkplaats
                     </h3>
                     <p className="text-xs text-slate-400 leading-relaxed font-sans">
-                      Beveiligde werkomgeving voor FD Printing medewerkers. Bekijk binnengekomen bestanden, verwerk orders, raadpleeg klantinformatie, pas orderstatussen aan en download drukklaar gemaakte PDF's.
+                      Hier werkt het personeel: opdrachten, opdrachtbonnen en bestanden van het eigen filiaal. Bekijk binnengekomen bestanden, verwerk orders, raadpleeg klantinformatie, pas orderstatussen aan en download drukklaar gemaakte PDF's.
                     </p>
                   </div>
                 </div>
@@ -2643,7 +2648,7 @@ export default function App() {
               }`}
             >
             <Database className={`w-3.5 h-3.5 ${activePortal === 'admin' ? 'text-white' : 'text-brand-red'}`} />
-              <span>Beheerders</span>
+              <span>Werkplaats</span>
             </button>
           </div>}
  
@@ -3070,10 +3075,10 @@ export default function App() {
               <div>
                 <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 font-sans flex items-center gap-2.5">
                   <Lock className="w-6 h-6 text-brand-red" />
-                  Beheerders backoffice
+                  {isAdminAuthenticated && sessionRole === 'admin' ? 'Beheerders backoffice' : 'FD Werkplaats'}
                 </h2>
                 <p className="text-sm text-slate-500 mt-1 font-sans">
-                  Beheer, controleer en download klantspecifieke drukbestanden met de bijhorende klantinformatie.
+                  {isAdminAuthenticated && sessionRole === 'admin' ? 'Beheer, controleer en download klantspecifieke drukbestanden met de bijhorende klantinformatie.' : 'Alle opdrachten, bonnen en bestanden van je filiaal op één plek.'}
                 </p>
               </div>
               
@@ -3198,6 +3203,17 @@ export default function App() {
                 {/* Backoffice Sub-nav Tabs */}
                 <div className="flex flex-wrap bg-white p-1.5 rounded-2xl border border-slate-200 max-w-2xl select-none font-sans gap-1 shadow-sm">
                   <button
+                    onClick={() => setAdminSubTab('overview')}
+                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 focus:outline-hidden ${
+                      adminSubTab === 'overview'
+                        ? 'bg-brand-red text-white shadow-sm font-extrabold'
+                        : 'text-slate-500 hover:text-brand-red hover:bg-rose-50'
+                    }`}
+                  >
+                    <Briefcase className={`w-3.5 h-3.5 ${adminSubTab === 'overview' ? 'text-white' : 'text-brand-red'}`} />
+                    <span>Overzicht</span>
+                  </button>
+                  <button
                     onClick={() => setAdminSubTab('files')}
                     className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 focus:outline-hidden ${
                       adminSubTab === 'files'
@@ -3206,7 +3222,7 @@ export default function App() {
                     }`}
                   >
                     <FolderOpen className={`w-3.5 h-3.5 font-bold ${adminSubTab === 'files' ? 'text-white' : 'text-amber-500'}`} />
-                    <span>Bestanden &amp; SRA3</span>
+                    <span>Bestanden</span>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${adminSubTab === 'files' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
                       {parsedFilesList.length}
                     </span>
@@ -3220,12 +3236,12 @@ export default function App() {
                     }`}
                   >
                     <Briefcase className={`w-3.5 h-3.5 ${adminSubTab === 'orders' ? 'text-white' : 'text-brand-red'}`} />
-                    <span>Orders Overzicht</span>
+                    <span>Opdrachten</span>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${adminSubTab === 'orders' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
                       {orders.length}
                     </span>
                   </button>
-                  <button
+                  {isOwner && <button
                     onClick={() => {
                       setAdminSubTab('staff');
                       fetchAdminStaff();
@@ -3237,11 +3253,11 @@ export default function App() {
                     }`}
                   >
                     <Users className={`w-3.5 h-3.5 ${adminSubTab === 'staff' ? 'text-white' : 'text-emerald-550'}`} />
-                    <span>Personeel &amp; Operator Status</span>
+                    <span>Personeel</span>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${adminSubTab === 'staff' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
                       {staffList.length}
                     </span>
-                  </button>
+                  </button>}
                   {can('bon_maken') && <button
                     onClick={() => {
                       setAdminSubTab('create_order');
@@ -3258,9 +3274,26 @@ export default function App() {
                   </button>}
                 </div>
 
-                {adminSubTab === 'files' ? (
+                {adminSubTab === 'overview' ? (
+                  <Suspense fallback={lazyFallback}>
+                    <BackofficeOverview
+                      orders={orders}
+                      branches={BRANCHES}
+                      isAdmin={isOwner}
+                      onNewTicket={can('bon_maken') ? () => setAdminSubTab('create_order') : undefined}
+                      onShowOrders={() => setAdminSubTab('orders')}
+                      onOpenOrder={(order) => {
+                        setSearchQuery(String(order.id || order.order_number || ''));
+                        setAdminCategoryFilter('All');
+                        setAdminSubTab('orders');
+                        fetchAdminOrders();
+                      }}
+                    />
+                  </Suspense>
+                ) : adminSubTab === 'files' ? (
                   /* DIRECT FILES WORKSPACE VIEW */
                   <div className="space-y-6 animate-fade-in font-sans">
+                    <p className="text-xs text-slate-500">De bestandenmap: alle bestanden die klanten hebben aangeleverd. Open een bestand om het te controleren, direct in te slaan op SRA3 of poster, of te downloaden.</p>
                     {/* Filter controls */}
                     <div className="bg-white p-4 border border-rose-100 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm select-none">
                       <div className="relative w-full md:w-80 font-sans">
