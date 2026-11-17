@@ -772,7 +772,8 @@ async function startServer() {
         success: true,
         orderId: created.order.id,
         trackingToken: created.order.trackingToken,
-        productUploadLinks: created.productUploadLinks
+        productUploadLinks: created.productUploadLinks,
+        branch: ticketBranch
       });
     }
 
@@ -795,7 +796,8 @@ async function startServer() {
       success: true,
       orderId: created.order.id,
       trackingToken: created.order.trackingToken,
-      productUploadLinks: created.productUploadLinks
+      productUploadLinks: created.productUploadLinks,
+      branch: newBranch
     });
   }));
 

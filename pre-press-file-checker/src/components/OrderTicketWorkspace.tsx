@@ -78,6 +78,7 @@ interface CreatedTicket {
   trackingToken: string;
   createdAt: string;
   data: Record<string, unknown>;
+  branch?: string;
   productUploadLinks: Array<{
     id: string;
     uploadToken: string;
@@ -114,10 +115,20 @@ const calculatorKindFor = (line: { description: string; category: string }): 'st
 const DRAFT_STORAGE_KEY = 'fd_bon_concept_v1';
 const DRAFT_KEEP_MS = 8 * 60 * 60 * 1000;
 
-const COMPANY_FOOTER = [
-  'Bijlmerplein 375 | 1102 DK Amsterdam | Tel : 020 - 363 1445',
-  'www.fdprintingcenter.nl | amsterdam@fdprintingcenter.nl',
-];
+const BRANCH_DETAILS: Record<string, { address: string; phone: string; email: string }> = {
+  Amsterdam: { address: 'Bijlmerplein 375 | 1102 DK Amsterdam-Zuidoost', phone: '020 - 363 14 45', email: 'amsterdam@fdprintingcenter.nl' },
+  Utrecht: { address: 'Amsterdamsestraatweg 72 | 3513 AJ Utrecht', phone: '030 - 231 96 46', email: 'utrecht@fdprintingcenter.nl' },
+  Hoogvliet: { address: 'Rijkeeplein 20 | 3191 VD Hoogvliet', phone: '010 - 303 27 98', email: 'hoogvliet@fdprintingcenter.nl' },
+};
+
+const companyFooter = (branchName?: string): string[] => {
+  const details = BRANCH_DETAILS[branchName || ''] || BRANCH_DETAILS.Amsterdam;
+  const name = BRANCH_DETAILS[branchName || ''] ? branchName : 'Amsterdam';
+  return [
+    `FD-printingcenter ${name} | ${details.address} | Tel : ${details.phone}`,
+    `www.fdprintingcenter.nl | ${details.email}`,
+  ];
+};
 
 const emptyLine = (product?: PrintProduct, quantity = '1'): TicketLine => ({
   description: product?.name ?? '',
@@ -237,10 +248,10 @@ function SheetLogo({ date }: { date: string }) {
   );
 }
 
-function SheetFooter() {
+function SheetFooter({ branch }: { branch?: string }) {
   return (
     <footer className="mt-6 border-y border-slate-400 py-3 text-center text-sm font-semibold leading-snug text-slate-900">
-      {COMPANY_FOOTER.map((line) => <p key={line}>{line}</p>)}
+      {companyFooter(branch).map((line) => <p key={line}>{line}</p>)}
     </footer>
   );
 }
@@ -836,7 +847,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       delivery_method: deliveryMethod,
       delivery_address: finalDeliveryAddress,
       assisted_by: helper,
-      ...(publicAccess && !editOrder ? { branch } : {}),
+      ...(!editOrder && branch ? { branch } : {}),
       order_status: publicAccess ? 'Nieuw' : status,
       payment_status: totals.paymentStatus,
       products_json: JSON.stringify(validLines),
@@ -894,6 +905,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
         trackingToken: result.trackingToken,
         createdAt: new Date().toISOString(),
         data: payload,
+        branch: typeof result.branch === 'string' ? result.branch : branch || undefined,
         productUploadLinks: uploadLinks,
       });
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -961,7 +973,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       '',
       'Met vriendelijke groet,',
       'FD Printing Center',
-      ...COMPANY_FOOTER,
+      ...companyFooter(createdTicket.branch),
     ].join('\n');
     if (!String(createdTicket.data.clientEmail || '').trim()) {
       setError('Er is geen e-mailadres ingevuld voor deze klant.');
@@ -1114,7 +1126,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             </div>
           </section>
 
-          <SheetFooter />
+          <SheetFooter branch={createdTicket?.branch} />
 
           <section className="print-break mt-8 space-y-3">
             <div>
@@ -1261,9 +1273,9 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 <FieldRow label="Bon nummer:">
                   <ReadValue><span className="font-mono text-xs">{ticketNumber}</span></ReadValue>
                 </FieldRow>
-                {publicAccess && !editOrder && (
+                {!editOrder && (
                   <FieldRow label="Filiaal:" htmlFor="ticket-branch">
-                    <select id="ticket-branch" required value={branch} onChange={(event) => chooseBranch(event.target.value)} className={lineInput}>
+                    <select id="ticket-branch" required={publicAccess} value={branch} onChange={(event) => chooseBranch(event.target.value)} className={lineInput}>
                       <option value="">— kies filiaal —</option>
                       {['Amsterdam', 'Utrecht', 'Hoogvliet'].map((name) => <option key={name} value={name}>{name}</option>)}
                     </select>
@@ -1545,7 +1557,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
             )}
           </section>
 
-          <SheetFooter />
+          <SheetFooter branch={staffBranch} />
         </article>
 
         {!publicAccess && (
