@@ -1,67 +1,42 @@
 import React from 'react';
+import { LOGO_PATHS, LOGO_VIEWBOX } from './fdLogoPaths';
 
 interface FDLogoProps {
   className?: string;
   iconOnly?: boolean;
+  /** Witte tekst voor donkere achtergronden. */
   lightText?: boolean;
 }
 
-export const FDLogo: React.FC<FDLogoProps> = ({ 
-  className = '', 
-  iconOnly = false,
-  lightText = false 
-}) => {
+/** Het officiële logo als vector: scherp op elk scherm en in print. */
+export const FDLogo: React.FC<FDLogoProps> = ({ className = '', iconOnly = false, lightText = false }) => {
+  const width = iconOnly ? LOGO_VIEWBOX.iconWidth : LOGO_VIEWBOX.width;
   return (
-    <div className={`flex items-center gap-3 select-none ${className}`}>
-      {/* Dynamic FD Vector Teardrop Pin Logo */}
-      <div className="w-10 h-10 shrink-0 transform transition-transform duration-300 hover:rotate-6">
-        <svg viewBox="0 0 160 160" className="w-full h-full" fill="none" xmlns="http://www.w3.org/2000/svg">
-          {/* Main Red Teardrop/Droplet Background pointing to bottom-right */}
-          <path 
-            d="M80 15 C44.1 15 15 44.1 15 80 C15 115.9 44.1 145 80 145 C101 145 145 145 145 145 C145 145 145 101 145 80 C145 44.1 115.9 15 80 15 Z" 
-            fill="#e31c24"
-          />
-          
-          {/* Concentric Thin White Inner Droplet Border */}
-          <path 
-            d="M80 23 C48.5 23 23 48.5 23 80 C23 111.5 48.5 137 80 137 C98.5 137 137 137 137 137 C137 137 137 98.5 137 80 C137 48.5 111.5 23 80 23 Z" 
-            fill="none" 
-            stroke="#ffffff" 
-            strokeWidth="3.5" 
-          />
-          
-          {/* Combined White Letter F & D */}
-          {/* Vertical left stem */}
-          <rect x="49" y="49" width="16" height="62" rx="3.5" fill="#ffffff" />
-          
-          {/* Outer Loop of letter D */}
-          <path 
-            d="M49 49 H81 C96.5 49 110 62.5 110 79.5 C110 96.5 96.5 110 81 110 H49" 
-            stroke="#ffffff" 
-            strokeWidth="15.5" 
-            strokeLinecap="round" 
-            strokeLinejoin="round" 
-            fill="none" 
-          />
-          
-          {/* Middle bar of letter F */}
-          <rect x="61" y="73.5" width="23" height="12" rx="2" fill="#ffffff" />
+    <div className={`flex items-center select-none ${className}`}>
+      <div className={`shrink-0 ${iconOnly ? 'h-10 w-10' : 'h-11'}`}>
+        <svg
+          viewBox={`0 0 ${width} ${LOGO_VIEWBOX.height}`}
+          className="h-full w-auto"
+          role="img"
+          aria-label="FD Printing Center"
+          xmlns="http://www.w3.org/2000/svg"
+          style={{ color: lightText ? '#ffffff' : '#231f20' }}
+        >
+          <defs>
+            <mask id="fd-logo-holes" maskUnits="userSpaceOnUse" x="0" y="0" width={LOGO_VIEWBOX.width} height={LOGO_VIEWBOX.height}>
+              <rect width={LOGO_VIEWBOX.width} height={LOGO_VIEWBOX.height} fill="#fff" />
+              {LOGO_PATHS.white.map((d, i) => <path key={i} d={d} fill="#000" />)}
+            </mask>
+          </defs>
+          {!iconOnly && (
+            <g mask="url(#fd-logo-holes)" fill="currentColor">
+              {LOGO_PATHS.dark.map((d, i) => <path key={i} d={d} />)}
+            </g>
+          )}
+          {LOGO_PATHS.red.map((d, i) => <path key={i} d={d} fill="#ed1c24" />)}
+          {LOGO_PATHS.off.map((d, i) => <path key={i} d={d} fill="#faf9fa" />)}
         </svg>
       </div>
-
-      {!iconOnly && (
-        <div className="flex flex-col items-start leading-none">
-          <div className="flex items-baseline font-sans">
-            <span className={`text-[19px] font-black tracking-tight ${lightText ? 'text-white' : 'text-slate-900'}`}>
-              Printing Center
-            </span>
-            <span className="text-[#e31c24] font-black text-[20px] ml-0.5">.nl</span>
-          </div>
-          <span className={`text-[9px] font-bold tracking-widest uppercase mt-1 ${lightText ? 'text-slate-400' : 'text-slate-500'}`}>
-            PRE-PRESS CONTROLE
-          </span>
-        </div>
-      )}
     </div>
   );
 };

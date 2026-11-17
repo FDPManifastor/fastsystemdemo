@@ -234,13 +234,7 @@ function ReadValue({ children }: { children: React.ReactNode }) {
 function SheetLogo({ date }: { date: string }) {
   return (
     <div className="flex flex-col items-end gap-2">
-      <div className="flex items-center gap-2">
-        <FDLogo iconOnly className="[&>div]:h-14 [&>div]:w-14" />
-        <div className="flex items-baseline">
-          <span className="text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">Printing Center</span>
-          <span className="ml-0.5 text-lg font-black text-[#e31c24]">.NL</span>
-        </div>
-      </div>
+      <FDLogo className="[&>div]:h-14" />
       <p className="text-xl font-medium tabular-nums text-slate-900">{date}</p>
     </div>
   );
