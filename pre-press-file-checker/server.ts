@@ -173,11 +173,13 @@ const parsePerms = (raw: string | null): StaffPermission[] => {
     return [];
   }
 };
+const sessionStartKey = (sessionId: string) => `sessstart:${crypto.createHash("sha256").update(sessionId).digest("hex")}`;
 const sessionRoleKey = (sessionId: string) => `sessrole:${crypto.createHash("sha256").update(sessionId).digest("hex")}`;
 
 async function createAdminSession(role: "admin" | "branch" = "admin", branch = "", staffId = "") {
   const sessionId = crypto.randomBytes(32).toString("hex");
   await storage.createSession(sessionId, Date.now() + ADMIN_SESSION_TTL_MS);
+  await storage.setMeta(sessionStartKey(sessionId), String(Date.now()));
   await storage.setMeta(sessionRoleKey(sessionId), role === "admin" ? "admin" : staffId ? `staff:${staffId}` : `branch:${branch}`);
   return sessionId;
 }
@@ -187,7 +189,14 @@ async function getAdminSession(req: express.Request) {
   const sessionId = cookies.fd_admin_session;
   if (!sessionId || !/^[a-f0-9]{64}$/.test(sessionId)) return null;
 
-  const valid = await storage.touchSession(sessionId, Date.now() + ADMIN_SESSION_TTL_MS);
+  // Een sessie duurt maximaal 8 uur na het inloggen, ook als er steeds gebruik van wordt gemaakt.
+  const started = Number(await storage.getMeta(sessionStartKey(sessionId))) || Date.now();
+  const endsAt = started + ADMIN_SESSION_TTL_MS;
+  if (Date.now() >= endsAt) {
+    await storage.deleteSession(sessionId);
+    return null;
+  }
+  const valid = await storage.touchSession(sessionId, endsAt);
   return valid ? sessionId : null;
 }
 

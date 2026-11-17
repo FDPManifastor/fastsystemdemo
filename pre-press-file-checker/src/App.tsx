@@ -205,7 +205,7 @@ export default function App() {
   /** Wie is ingelogd: beheerder ziet alles, een filiaal alleen de eigen en gedeelde opdrachten. */
   const [sessionRole, setSessionRole] = useState<'admin' | 'branch'>('branch');
   const [sessionBranch, setSessionBranch] = useState<string>('');
-  const [loginBranch, setLoginBranch] = useState<string>('');
+  const [loginBranch, setLoginBranch] = useState<string>('Amsterdam');
   const [branchFilter, setBranchFilter] = useState<string>('Alle');
   const [editingOrder, setEditingOrder] = useState<any | null>(null);
   const [clientBranch, setClientBranch] = useState('');
@@ -213,9 +213,7 @@ export default function App() {
   const [sessionStaffName, setSessionStaffName] = useState('');
   const [loginStaffId, setLoginStaffId] = useState('');
   const [loginMembers, setLoginMembers] = useState<Array<{ id: string; name: string; branch?: string }>>([]);
-  useEffect(() => {
-    fetch('/api/public/staff-login').then((r) => r.json()).then((d) => setLoginMembers(Array.isArray(d.members) ? d.members : [])).catch(() => {});
-  }, []);
+
   const [staffAccess, setStaffAccess] = useState<Record<string, { permissions: string[]; passwordSet: boolean }>>({});
   const [accessDraft, setAccessDraft] = useState<Record<string, string[]>>({});
   const [accessPassword, setAccessPassword] = useState<Record<string, string>>({});
@@ -935,7 +933,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ password: adminPasswordInput, ...(loginStaffId ? { staffId: loginStaffId } : {}) })
+        body: JSON.stringify({ password: adminPasswordInput, ...(loginBranch ? { branch: loginBranch } : {}) })
       });
       if (!response.ok) {
         const failure = await response.json().catch(() => ({}));
@@ -3084,25 +3082,18 @@ export default function App() {
                   <div className="space-y-1">
                     <h3 className="text-base font-extrabold text-slate-900">Beveiligde Toegang</h3>
                     <p className="text-xs text-slate-500 leading-relaxed">
-                      Kies je naam en vul je wachtwoord in.
+                      Kies je filiaal (of beheerder) en vul het wachtwoord in.
                     </p>
                   </div>
                   <form onSubmit={handleAdminLogin} className="space-y-3">
                     <select
-                      value={loginStaffId}
-                      onChange={(e) => setLoginStaffId(e.target.value)}
-                      aria-label="Wie ben je"
+                      value={loginBranch}
+                      onChange={(e) => setLoginBranch(e.target.value)}
+                      aria-label="Inloggen als"
                       className="w-full rounded-xl border border-slate-250 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-900"
                     >
+                      {BRANCHES.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
                       <option value="">Beheerder</option>
-                      {BRANCHES.map((branch) => {
-                        const names = loginMembers.filter((member: any) => member.branch === branch);
-                        return names.length ? (
-                          <optgroup key={branch} label={branch}>
-                            {names.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
-                          </optgroup>
-                        ) : null;
-                      })}
                     </select>
                     <div className="relative">
                       <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
@@ -4505,7 +4496,7 @@ export default function App() {
                     </form>
                     )}
 
-                    {false && (
+                    {isOwner && (
                       <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-white p-4 text-left">
                         <div>
                           <h4 className="text-xs font-extrabold text-slate-900">Wachtwoorden per filiaal</h4>
@@ -4540,7 +4531,7 @@ export default function App() {
                       <p className="text-xs text-rose-600 font-semibold mt-2 text-left">{staffError}</p>
                     )}
 
-                    {isOwner && staffList.length > 0 && (
+                    {false && isOwner && staffList.length > 0 && (
                       <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4 text-left space-y-4">
                         <div>
                           <h4 className="text-sm font-extrabold text-slate-900">Rechten per medewerker</h4>
