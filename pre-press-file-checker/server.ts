@@ -591,6 +591,50 @@ async function startServer() {
     return res.json(await projectMap.get(req.query.refresh === "1"));
   }));
 
+  // Taakstatussen en eigen ideeën voor de overzichtskaart (/map).
+  const MAP_STATE_KEY = "map_state_v1";
+  const MAP_STATUSES = ["Idee", "Te doen", "Bezig", "Klaar", "Niet doen"];
+  const MAP_SOURCES = ["Eigen idee"];
+  const MAP_PRIORITIES = ["Hoog", "Middel", "Laag"];
+  app.get("/api/admin/map/state", requireAdmin, asyncRoute(async (_req, res) => {
+    res.setHeader("Cache-Control", "private, no-store");
+    const raw = await storage.getMeta(MAP_STATE_KEY);
+    try {
+      return res.json(raw ? JSON.parse(raw) : { statuses: {}, custom: [] });
+    } catch {
+      return res.json({ statuses: {}, custom: [] });
+    }
+  }));
+  app.put("/api/admin/map/state", requireAdmin, asyncRoute(async (req, res) => {
+    const body = req.body || {};
+    const statuses: Record<string, string> = {};
+    if (body.statuses && typeof body.statuses === "object") {
+      for (const [key, value] of Object.entries(body.statuses).slice(0, 500)) {
+        if (typeof value === "string" && MAP_STATUSES.includes(value) && key.length <= 60) statuses[key] = value;
+      }
+    }
+    const custom: any[] = [];
+    if (Array.isArray(body.custom)) {
+      for (const item of body.custom.slice(0, 200)) {
+        if (!item || typeof item.id !== "string" || typeof item.title !== "string" || !item.title.trim()) continue;
+        custom.push({
+          id: item.id.slice(0, 60),
+          nodeId: String(item.nodeId || "").slice(0, 40),
+          title: item.title.trim().slice(0, 140),
+          what: String(item.what || "").slice(0, 600),
+          source: MAP_SOURCES.includes(item.source) ? item.source : "Eigen idee",
+          priority: MAP_PRIORITIES.includes(item.priority) ? item.priority : "Laag",
+          effort: item.effort === "Groot" ? "Groot" : "Quick win",
+          status: MAP_STATUSES.includes(item.status) ? item.status : "Idee",
+          custom: true,
+          createdAt: String(item.createdAt || "").slice(0, 40),
+        });
+      }
+    }
+    await storage.setMeta(MAP_STATE_KEY, JSON.stringify({ statuses, custom }));
+    return res.json({ ok: true });
+  }));
+
   app.post("/api/admin/catalog/sync", requireAdmin, asyncRoute(async (req, res) => {
     try {
       await catalog.sync();
