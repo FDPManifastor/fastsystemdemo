@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Download, X } from 'lucide-react';
+import { loadFilePreview } from './ticket/TicketTools';
 import { SHEET_PRESETS, buildImposedPdf, planImposition } from '../utils/imposition';
 
 interface ImpositionModalProps {
@@ -30,6 +31,27 @@ export default function ImpositionModal({ fileUrl, fileName, fileType, productNa
   const [cropMarks, setCropMarks] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [artworkUrl, setArtworkUrl] = useState('');
+
+  // Haal het ontwerp op (pdf: pagina 1) zodat het voorbeeld het echte ontwerp laat zien.
+  useEffect(() => {
+    let active = true;
+    setArtworkUrl('');
+    (async () => {
+      try {
+        const response = await fetch(fileUrl, { credentials: 'include' });
+        if (!response.ok) return;
+        const blob = await response.blob();
+        const loaded = await loadFilePreview(new File([blob], fileName, { type: fileType || blob.type }));
+        if (active) setArtworkUrl(loaded.url);
+      } catch {
+        // Zonder voorbeeldafbeelding blijft het schema met gekleurde vlakken staan.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [fileUrl, fileName, fileType]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -168,7 +190,14 @@ export default function ImpositionModal({ fileUrl, fileName, fileType, productNa
                     return (
                       <g key={`${row}-${column}`}>
                         <rect x={x} y={y} width={plan.cellWidthMm} height={plan.cellHeightMm} fill={plan.fits ? '#fecaca' : '#fde68a'} />
-                        <rect x={x + settings.bleedMm} y={y + settings.bleedMm} width={settings.trimWidthMm} height={settings.trimHeightMm} fill={plan.fits ? '#e31c24' : '#f59e0b'} opacity="0.85" />
+                        {artworkUrl ? (
+                          <svg x={x} y={y} width={plan.cellWidthMm} height={plan.cellHeightMm} viewBox="0 0 100 100" preserveAspectRatio="none" overflow="hidden">
+                            <image href={artworkUrl} x="0" y="0" width="100" height="100" preserveAspectRatio="xMidYMid slice" />
+                          </svg>
+                        ) : (
+                          <rect x={x + settings.bleedMm} y={y + settings.bleedMm} width={settings.trimWidthMm} height={settings.trimHeightMm} fill={plan.fits ? '#e31c24' : '#f59e0b'} opacity="0.85" />
+                        )}
+                        <rect x={x + settings.bleedMm} y={y + settings.bleedMm} width={settings.trimWidthMm} height={settings.trimHeightMm} fill="none" stroke={plan.fits ? '#0f172a' : '#b45309'} strokeWidth="0.4" strokeDasharray="1.5 1" />
                       </g>
                     );
                   }))}

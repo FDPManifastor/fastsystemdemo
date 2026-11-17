@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Calculator, CheckCircle, FileText, RotateCw, X } from 'lucide-react';
 import LiveFilePreview from '../LiveFilePreview';
 import { renderPdfFile } from '../../utils/pdfLoader';
+import { buildPrintReadyPdf } from '../../utils/printReady';
 import type { FitMode, PrintProduct } from '../../types';
 import {
   BANNER_MATERIALS,
@@ -429,6 +430,8 @@ export function FileThumb({ file, remoteUrl, fileName, fileType, size = 44 }: { 
 export interface PrepressOutcome {
   ok: boolean;
   note: string;
+  /** Printklaar bestand (eindformaat + afloop) dat het origineel vervangt. */
+  file?: File;
 }
 
 interface PrepressModalProps {
@@ -447,6 +450,8 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
   const [error, setError] = useState('');
   const [fitMode, setFitMode] = useState<FitMode>('fit');
   const [rotation, setRotation] = useState(0);
+  const [bleed, setBleed] = useState('2');
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -532,6 +537,33 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
 
   const allOk = checks.length > 0 && checks.every((check) => check.ok);
   const fitLabel = fitMode === 'fit' ? 'passend' : fitMode === 'fill' ? 'vullend' : 'uitgerekt';
+  const noteFor = (processed: boolean, bleedMm = 0) =>
+    `${allOk ? 'Gecontroleerd: in orde' : 'Gecontroleerd: aandachtspunten'} · ${fitLabel}${rotation ? ` · ${rotation}° gedraaid` : ''}${processed ? ` · printklaar gemaakt (${widthMm} × ${heightMm} mm + ${bleedMm} mm afloop)` : ''}${checks.filter((check) => !check.ok).map((check) => ` · ${check.label.toLowerCase()} controleren`).join('')}`;
+
+  const applyPrintReady = async () => {
+    const bleedMm = Number(bleed.replace(',', '.'));
+    if (!Number.isFinite(bleedMm) || bleedMm < 0 || bleedMm > 20) {
+      setError('Vul een afloop tussen 0 en 20 mm in.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const result = await buildPrintReadyPdf(bytes, getUploadFileType(file), { trimWidthMm: widthMm, trimHeightMm: heightMm, bleedMm, fit: fitMode, rotation });
+      if (result.byteLength > MAX_UPLOAD_BYTES) {
+        setError('Het printklare bestand is groter dan 4 MB. Gebruik het origineel of een kleiner bestand.');
+        return;
+      }
+      const name = `${file.name.replace(/\.[^.]+$/, '')}_printklaar.pdf`;
+      onDone({ ok: allOk, note: noteFor(true, bleedMm), file: new File([result as unknown as BlobPart], name, { type: 'application/pdf' }) });
+    } catch (applyError) {
+      console.error('Printklaar maken mislukt:', applyError);
+      setError('Het bestand kon niet op formaat worden gezet. Gebruik het origineel.');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div role="dialog" aria-modal="true" aria-label={`Pre-press check voor ${description}`} className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/70 p-3 sm:p-6">
@@ -602,18 +634,23 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
               ))}
             </ul>
 
+            <label className="block space-y-1">
+              <span className="block text-[10px] font-bold uppercase text-slate-500">Afloop (mm)</span>
+              <input inputMode="decimal" value={bleed} onChange={(event) => setBleed(event.target.value)} className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm tabular-nums" />
+            </label>
+
+            <button type="button" disabled={!preview || busy} onClick={applyPrintReady} className="w-full rounded-lg bg-[#e31c24] px-3 py-2.5 text-xs font-bold text-white hover:bg-[#b8141a] disabled:opacity-50">
+              {busy ? 'Bestand wordt gemaakt…' : `Zet op ${widthMm} × ${heightMm} mm en gebruik`}
+            </button>
             <button
               type="button"
-              disabled={!preview}
-              onClick={() => onDone({
-                ok: allOk,
-                note: `${allOk ? 'Gecontroleerd: in orde' : 'Gecontroleerd: aandachtspunten'} · ${fitLabel}${rotation ? ` · ${rotation}° gedraaid` : ''}${checks.filter((check) => !check.ok).map((check) => ` · ${check.label.toLowerCase()} controleren`).join('')}`,
-              })}
-              className="w-full rounded-lg bg-[#e31c24] px-3 py-2.5 text-xs font-bold text-white hover:bg-[#b8141a] disabled:opacity-50"
+              disabled={!preview || busy}
+              onClick={() => onDone({ ok: allOk, note: noteFor(false) })}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
-              Check afronden
+              Origineel gebruiken
             </button>
-            <p className="text-[10px] leading-snug text-slate-500">Het originele bestand wordt bij de opdracht opgeslagen. De uitkomst van deze check komt als notitie bij het product in het backoffice.</p>
+            <p className="text-[10px] leading-snug text-slate-500">Het bestand wordt als pdf op eindformaat plus afloop gezet, zodat het direct ingeslagen kan worden. De uitkomst komt als notitie bij het product in het backoffice.</p>
           </aside>
         </div>
       </div>

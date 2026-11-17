@@ -361,6 +361,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       return;
     }
     updateLine(lineIndex, { file, prepressNote: '' });
+    if (file) setPrepressIndex(lineIndex);
   };
 
   const totals = useMemo(() => {
@@ -1237,7 +1238,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
           heightMm={Number(lines[prepressIndex].height) || 297}
           onClose={() => setPrepressIndex(null)}
           onDone={(outcome) => {
-            updateLine(prepressIndex, { prepressNote: outcome.note });
+            updateLine(prepressIndex, outcome.file ? { prepressNote: outcome.note, file: outcome.file } : { prepressNote: outcome.note });
             setPrepressIndex(null);
           }}
         />
