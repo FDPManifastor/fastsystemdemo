@@ -156,13 +156,26 @@ function verifyPassword(password: string, stored: string | null) {
   return crypto.timingSafeEqual(actual, expected);
 }
 
-type SessionInfo = { sessionId: string; role: "admin" | "branch"; branch: string };
+const STAFF_PERMISSIONS = ["bon_maken", "status_wijzigen", "bon_aanpassen", "betaling", "bestanden", "prepress"] as const;
+type StaffPermission = (typeof STAFF_PERMISSIONS)[number];
+type SessionInfo = { sessionId: string; role: "admin" | "branch"; branch: string; staffId?: string; staffName?: string; perms: StaffPermission[] | null };
+/** Beheerder en filiaal-login (zonder eigen medewerkersaccount) hebben alle rechten; een persoonlijke login alleen de aangevinkte. */
+const hasPerm = (info: SessionInfo, perm: StaffPermission) => info.role === "admin" || info.perms === null || info.perms.includes(perm);
+const denyPerm = (res: express.Response) => res.status(403).json({ error: "U heeft hier geen rechten voor. Vraag de beheerder." });
+const parsePerms = (raw: string | null): StaffPermission[] => {
+  try {
+    const list = JSON.parse(raw || "[]");
+    return Array.isArray(list) ? STAFF_PERMISSIONS.filter((perm) => list.includes(perm)) : [];
+  } catch {
+    return [];
+  }
+};
 const sessionRoleKey = (sessionId: string) => `sessrole:${crypto.createHash("sha256").update(sessionId).digest("hex")}`;
 
-async function createAdminSession(role: "admin" | "branch" = "admin", branch = "") {
+async function createAdminSession(role: "admin" | "branch" = "admin", branch = "", staffId = "") {
   const sessionId = crypto.randomBytes(32).toString("hex");
   await storage.createSession(sessionId, Date.now() + ADMIN_SESSION_TTL_MS);
-  await storage.setMeta(sessionRoleKey(sessionId), role === "admin" ? "admin" : `branch:${branch}`);
+  await storage.setMeta(sessionRoleKey(sessionId), role === "admin" ? "admin" : staffId ? `staff:${staffId}` : `branch:${branch}`);
   return sessionId;
 }
 
@@ -180,8 +193,15 @@ async function getSessionInfo(req: express.Request): Promise<SessionInfo | null>
   const sessionId = await getAdminSession(req);
   if (!sessionId) return null;
   const raw = await storage.getMeta(sessionRoleKey(sessionId));
-  if (raw && raw.startsWith("branch:") && isBranch(raw.slice(7))) return { sessionId, role: "branch", branch: raw.slice(7) };
-  return { sessionId, role: "admin", branch: "" };
+  if (raw && raw.startsWith("branch:") && isBranch(raw.slice(7))) return { sessionId, role: "branch", branch: raw.slice(7), perms: null };
+  if (raw && raw.startsWith("staff:")) {
+    const staffId = raw.slice(6);
+    const member = (await storage.listStaff()).find((item) => item.id === staffId);
+    // Verwijderde medewerker of medewerker zonder filiaal: sessie is niet meer geldig.
+    if (!member || !isBranch(member.branch)) return null;
+    return { sessionId, role: "branch", branch: member.branch, staffId, staffName: member.name, perms: parsePerms(await storage.getMeta(`staffperm:${staffId}`)) };
+  }
+  return { sessionId, role: "admin", branch: "", perms: null };
 }
 
 const orderBranch = (order: any) => (isBranch(order?.branch) ? order.branch : DEFAULT_BRANCH);
@@ -577,13 +597,25 @@ async function startServer() {
   app.post("/api/auth/login", rateLimit(AUTH_RATE_LIMIT_MAX_REQUESTS), asyncRoute(async (req, res) => {
     const submittedPassword = typeof req.body?.password === "string" ? req.body.password : "";
     const requestedBranch = req.body?.branch;
+    const requestedStaffId = typeof req.body?.staffId === "string" ? req.body.staffId : "";
     let sessionId: string;
+    let loginBranch = "";
 
-    if (isBranch(requestedBranch)) {
+    if (requestedStaffId) {
+      // Persoonlijke login: eigen wachtwoord en eigen rechten, ingesteld door de beheerder.
+      const member = (await storage.listStaff()).find((item) => item.id === requestedStaffId);
+      const stored = member ? await storage.getMeta(`staffpw:${member.id}`) : null;
+      if (!member || !isBranch(member.branch) || !stored || !submittedPassword || !verifyPassword(submittedPassword, stored)) {
+        return res.status(401).json({ error: "Invalid password." });
+      }
+      loginBranch = member.branch;
+      sessionId = await createAdminSession("branch", member.branch, member.id);
+    } else if (isBranch(requestedBranch)) {
       // Filiaal-login: elk filiaal heeft een eigen wachtwoord dat de beheerder instelt.
       const stored = await storage.getMeta(`branchpw:${requestedBranch}`);
       if (!stored) return res.status(401).json({ error: "Voor dit filiaal is nog geen wachtwoord ingesteld. Vraag de beheerder." });
       if (!submittedPassword || !verifyPassword(submittedPassword, stored)) return res.status(401).json({ error: "Invalid password." });
+      loginBranch = requestedBranch;
       sessionId = await createAdminSession("branch", requestedBranch);
     } else {
       if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12) {
@@ -603,7 +635,7 @@ async function startServer() {
       maxAge: ADMIN_SESSION_TTL_MS,
     });
 
-    return res.json({ ok: true, role: isBranch(requestedBranch) ? "branch" : "admin", branch: isBranch(requestedBranch) ? requestedBranch : "" });
+    return res.json({ ok: true, role: loginBranch ? "branch" : "admin", branch: loginBranch });
   }));
 
   app.post("/api/auth/logout", asyncRoute(async (req, res) => {
@@ -620,7 +652,14 @@ async function startServer() {
 
   app.get("/api/auth/session", asyncRoute(async (req, res) => {
     const info = await getSessionInfo(req);
-    return res.json({ authenticated: Boolean(info), role: info?.role ?? null, branch: info?.branch ?? "", branches: BRANCHES });
+    return res.json({
+      authenticated: Boolean(info),
+      role: info?.role ?? null,
+      branch: info?.branch ?? "",
+      staffName: info?.staffName ?? "",
+      permissions: info ? (info.role === "admin" || info.perms === null ? [...STAFF_PERMISSIONS] : info.perms) : [],
+      branches: BRANCHES
+    });
   }));
 
   app.get("/api/staff", requireStaffSession, asyncRoute(async (req, res) => {
@@ -635,7 +674,10 @@ async function startServer() {
     const branch = req.query.branch;
     if (!isBranch(branch)) return res.status(400).json({ error: "Kies een filiaal." });
     const staff = await storage.listStaff();
-    res.json({ names: staff.filter((member) => !member.branch || member.branch === branch).map((member) => member.name) });
+    const inBranch = staff.filter((member) => !member.branch || member.branch === branch);
+    const members: Array<{ id: string; name: string }> = [];
+    for (const member of inBranch) if (member.branch === branch && (await storage.getMeta(`staffpw:${member.id}`))) members.push({ id: member.id, name: member.name });
+    res.json({ names: inBranch.map((member) => member.name), members });
   }));
 
   app.post("/api/staff", requireAdmin, asyncRoute(async (req, res) => {
@@ -658,8 +700,37 @@ async function startServer() {
     res.json(newMember);
   }));
 
+  app.get("/api/admin/staff-access", requireAdmin, asyncRoute(async (req, res) => {
+    const staff = await storage.listStaff();
+    const access: Record<string, { permissions: StaffPermission[]; passwordSet: boolean }> = {};
+    for (const member of staff) {
+      access[member.id] = { permissions: parsePerms(await storage.getMeta(`staffperm:${member.id}`)), passwordSet: Boolean(await storage.getMeta(`staffpw:${member.id}`)) };
+    }
+    res.json({ permissionsAvailable: STAFF_PERMISSIONS, access });
+  }));
+
+  app.put("/api/admin/staff/:id/access", requireAdmin, asyncRoute(async (req, res) => {
+    const member = (await storage.listStaff()).find((item) => item.id === req.params.id);
+    if (!member) return res.status(404).json({ error: "Medewerker niet gevonden." });
+    const { permissions, password } = req.body || {};
+    if (permissions !== undefined) {
+      if (!Array.isArray(permissions) || !permissions.every((perm: unknown) => STAFF_PERMISSIONS.includes(perm as StaffPermission))) {
+        return res.status(400).json({ error: "Ongeldige rechten." });
+      }
+      await storage.setMeta(`staffperm:${member.id}`, JSON.stringify(permissions));
+    }
+    if (password !== undefined && password !== "") {
+      if (typeof password !== "string" || password.length < 8 || password.length > 100) return res.status(400).json({ error: "Het wachtwoord moet 8 tot 100 tekens zijn." });
+      if (!isBranch(member.branch)) return res.status(400).json({ error: "Geef deze medewerker eerst een filiaal." });
+      await storage.setMeta(`staffpw:${member.id}`, hashPassword(password));
+    }
+    res.json({ success: true });
+  }));
+
   app.delete("/api/staff/:id", requireAdmin, asyncRoute(async (req, res) => {
     await storage.deleteStaff(req.params.id);
+    await storage.setMeta(`staffpw:${req.params.id}`, "");
+    await storage.setMeta(`staffperm:${req.params.id}`, "");
     res.json({ success: true });
   }));
 
@@ -696,6 +767,7 @@ async function startServer() {
   }));
 
   app.get("/api/orders/:id/files/:fileId", requireStaffSession, asyncRoute(async (req, res) => {
+    if (!hasPerm(res.locals.session, "bestanden")) return denyPerm(res);
     if (!/^[a-f0-9]{24}$/.test(req.params.fileId)) {
       return res.status(404).json({ error: "File not found." });
     }
@@ -786,6 +858,7 @@ async function startServer() {
 
   app.post("/api/admin/orders", requireStaffSession, asyncRoute(async (req, res) => {
     const info = res.locals.session as SessionInfo;
+    if (!hasPerm(info, "bon_maken")) return denyPerm(res);
     const orderData = req.body?.orderData;
     // Een filiaal maakt altijd orders voor het eigen filiaal; de beheerder kiest zelf.
     const newBranch = info.role === "branch" ? info.branch : isBranch(orderData?.branch) ? orderData.branch : DEFAULT_BRANCH;
@@ -808,6 +881,9 @@ async function startServer() {
     const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit } = req.body || {};
     const current = await storage.getOrder(req.params.id);
     if (!current || !canSeeOrder(current, info)) return res.status(404).json({ error: "Order not found." });
+    if ((edit !== undefined || sharedWith !== undefined || moveToBranch !== undefined) && !hasPerm(info, "bon_aanpassen")) return denyPerm(res);
+    if (payment !== undefined && !hasPerm(info, "betaling")) return denyPerm(res);
+    if ((status !== undefined || note !== undefined || assignedStaff !== undefined) && !hasPerm(info, "status_wijzigen")) return denyPerm(res);
     if ((sharedWith !== undefined || moveToBranch !== undefined || edit !== undefined) && !canManageOrder(current, info)) {
       return res.status(403).json({ error: "Alleen het filiaal van deze opdracht of de beheerder kan dit aanpassen." });
     }

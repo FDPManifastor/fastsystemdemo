@@ -197,6 +197,23 @@ export default function App() {
   const [branchFilter, setBranchFilter] = useState<string>('Alle');
   const [editingOrder, setEditingOrder] = useState<any | null>(null);
   const [clientBranch, setClientBranch] = useState('');
+  const [sessionPerms, setSessionPerms] = useState<string[]>([]);
+  const [sessionStaffName, setSessionStaffName] = useState('');
+  const [loginStaffId, setLoginStaffId] = useState('');
+  const [loginMembers, setLoginMembers] = useState<Array<{ id: string; name: string }>>([]);
+  const [staffAccess, setStaffAccess] = useState<Record<string, { permissions: string[]; passwordSet: boolean }>>({});
+  const [accessDraft, setAccessDraft] = useState<Record<string, string[]>>({});
+  const [accessPassword, setAccessPassword] = useState<Record<string, string>>({});
+  const [accessMessage, setAccessMessage] = useState('');
+  const can = (permission: string) => sessionRole === 'admin' || sessionPerms.includes(permission);
+  const PERMISSION_LABELS: Array<[string, string]> = [
+    ['bon_maken', 'Opdrachtbon invullen'],
+    ['status_wijzigen', 'Status wijzigen en kiezen wie ermee bezig is'],
+    ['bon_aanpassen', 'Bon aanpassen en delen met een filiaal'],
+    ['betaling', 'Betalingen registreren'],
+    ['bestanden', 'Klantbestanden bekijken en downloaden'],
+    ['prepress', 'Preflight en imposeren gebruiken'],
+  ];
   const [staffBranchInput, setStaffBranchInput] = useState<string>('Amsterdam');
   const [branchPasswords, setBranchPasswords] = useState<Record<string, string>>({});
   const [branchPasswordSet, setBranchPasswordSet] = useState<Record<string, boolean>>({});
@@ -855,6 +872,35 @@ export default function App() {
     }
   };
 
+  const fetchStaffAccess = async () => {
+    try {
+      const response = await fetch('/api/admin/staff-access', { credentials: 'include' });
+      if (!response.ok) return;
+      const data = await response.json();
+      setStaffAccess(data.access || {});
+      setAccessDraft(Object.fromEntries(Object.entries(data.access || {}).map(([id, value]: [string, any]) => [id, value.permissions || []])));
+    } catch { /* geen rechten geladen */ }
+  };
+
+  const saveStaffAccess = async (staffId: string) => {
+    setAccessMessage('');
+    try {
+      const response = await fetch(`/api/admin/staff/${encodeURIComponent(staffId)}/access`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ permissions: accessDraft[staffId] || [], password: accessPassword[staffId] || '' })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) { setAccessMessage(result.error || 'Opslaan mislukt.'); return; }
+      setAccessPassword((current) => ({ ...current, [staffId]: '' }));
+      setAccessMessage('Rechten opgeslagen.');
+      fetchStaffAccess();
+    } catch {
+      setAccessMessage('De server is niet bereikbaar.');
+    }
+  };
+
   const handleAdminLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setAdminAuthError(null);
@@ -863,7 +909,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ password: adminPasswordInput, ...(loginBranch ? { branch: loginBranch } : {}) })
+        body: JSON.stringify({ password: adminPasswordInput, ...(loginStaffId ? { staffId: loginStaffId } : loginBranch ? { branch: loginBranch } : {}) })
       });
       if (!response.ok) {
         const failure = await response.json().catch(() => ({}));
@@ -875,6 +921,10 @@ export default function App() {
       setSessionBranch(typeof loggedIn.branch === 'string' ? loggedIn.branch : '');
       setIsAdminAuthenticated(true);
       setAdminPasswordInput('');
+      fetch('/api/auth/session', { credentials: 'include' }).then((r) => r.json()).then((data) => {
+        setSessionPerms(Array.isArray(data.permissions) ? data.permissions : []);
+        setSessionStaffName(typeof data.staffName === 'string' ? data.staffName : '');
+      }).catch(() => {});
       fetchAdminOrders();
       fetchAdminStaff();
     } catch {
@@ -1426,6 +1476,8 @@ export default function App() {
         setIsAdminAuthenticated(Boolean(data.authenticated));
         setSessionRole(data.role === 'branch' ? 'branch' : 'admin');
         setSessionBranch(typeof data.branch === 'string' ? data.branch : '');
+        setSessionPerms(Array.isArray(data.permissions) ? data.permissions : []);
+        setSessionStaffName(typeof data.staffName === 'string' ? data.staffName : '');
       })
       .catch(() => setIsAdminAuthenticated(false));
   }, []);
@@ -1452,7 +1504,7 @@ export default function App() {
     if (isAdminAuthenticated) {
       fetchAdminOrders();
       fetchAdminStaff();
-      if (sessionRole === 'admin') fetchBranchPasswords();
+      if (sessionRole === 'admin') { fetchBranchPasswords(); fetchStaffAccess(); }
     }
   }, [isAdminAuthenticated, sessionRole]);
 
@@ -2971,7 +3023,7 @@ export default function App() {
               
               {isAdminAuthenticated && (
                 <span className="mr-3 rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-600">
-                  {sessionRole === 'admin' ? 'Beheerder · alle filialen' : `Filiaal ${sessionBranch}`}
+                  {sessionRole === 'admin' ? 'Beheerder · alle filialen' : `Filiaal ${sessionBranch}${sessionStaffName ? ` · ${sessionStaffName}` : ''}`}
                 </span>
               )}
               {isAdminAuthenticated && (
@@ -3008,13 +3060,31 @@ export default function App() {
                   <form onSubmit={handleAdminLogin} className="space-y-3">
                     <select
                       value={loginBranch}
-                      onChange={(e) => setLoginBranch(e.target.value)}
+                      onChange={(e) => {
+                        setLoginBranch(e.target.value);
+                        setLoginStaffId('');
+                        setLoginMembers([]);
+                        if (e.target.value) {
+                          fetch(`/api/public/staff?branch=${encodeURIComponent(e.target.value)}`).then((r) => r.json()).then((d) => setLoginMembers(Array.isArray(d.members) ? d.members : [])).catch(() => {});
+                        }
+                      }}
                       aria-label="Inloggen als"
                       className="w-full rounded-xl border border-slate-250 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-900"
                     >
                       <option value="">Beheerder (alle filialen)</option>
                       {BRANCHES.map((branch) => <option key={branch} value={branch}>Filiaal {branch}</option>)}
                     </select>
+                    {loginBranch && loginMembers.length > 0 && (
+                      <select
+                        value={loginStaffId}
+                        onChange={(e) => setLoginStaffId(e.target.value)}
+                        aria-label="Medewerker"
+                        className="w-full rounded-xl border border-slate-250 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-900"
+                      >
+                        <option value="">Filiaalwachtwoord (zonder persoonlijke login)</option>
+                        {loginMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                      </select>
+                    )}
                     <div className="relative">
                       <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
                       <input
@@ -3130,7 +3200,7 @@ export default function App() {
                       {staffList.length}
                     </span>
                   </button>
-                  <button
+                  {can('bon_maken') && <button
                     onClick={() => {
                       setAdminSubTab('create_order');
                       setManualCreatedOrder(null);
@@ -3143,7 +3213,7 @@ export default function App() {
                   >
                     <PlusCircle className={`w-3.5 h-3.5 ${adminSubTab === 'create_order' ? 'text-white' : 'text-brand-red'}`} />
                     <span className="font-bold">Handmatige Opdracht</span>
-                  </button>
+                  </button>}
                 </div>
 
                 {adminSubTab === 'files' ? (
@@ -3693,7 +3763,7 @@ export default function App() {
                                           </div>
                                           <p className="text-[10px] text-slate-400">{canManage ? 'Alleen de aangevinkte filialen kunnen deze opdracht zien.' : `Deze opdracht is door ${ownBranch} met jouw filiaal gedeeld.`}</p>
                                         </div>
-                                        {order.order_type === 'opdrachtbon' && canManage && (
+                                        {order.order_type === 'opdrachtbon' && canManage && can('bon_aanpassen') && (
                                           <button type="button" onClick={() => setEditingOrder(order)} className="rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-slate-700">
                                             Bon aanpassen
                                           </button>
@@ -3729,6 +3799,7 @@ export default function App() {
                                             <> · Aanbetaald: <strong>{Number(order.prepayment).toLocaleString('nl-NL', { style: 'currency', currency: 'EUR' })}</strong></>
                                           )}
                                         </p>
+                                        <fieldset disabled={!can('betaling')} className="m-0 min-w-0 border-0 p-0">
                                         {order.payment_status === 'Volledig betaald' ? (
                                           <button
                                             type="button"
@@ -3765,6 +3836,7 @@ export default function App() {
                                             </form>
                                           </div>
                                         )}
+                                        </fieldset>
                                       </div>
                                       <p className="text-slate-700">
                                         Bonstatus: <strong>{order.order_status || 'Nieuw'}</strong>
@@ -3829,6 +3901,7 @@ export default function App() {
                                     <select
                                       value={order.assignedStaff || ''}
                                       onChange={(e) => handleAssignStaff(order.id, e.target.value)}
+                                      disabled={!can('status_wijzigen')}
                                       className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] font-semibold text-slate-705 focus:ring-1 focus:ring-blue-500 cursor-pointer"
                                     >
                                       <option value="">-- Nog niemand --</option>
@@ -3899,7 +3972,7 @@ export default function App() {
 
                               {/* Right Column: Preflight Downloads and Render Canvas */}
                               <div className="lg:col-span-4 space-y-4 font-sans">
-                                {Array.isArray(order.customerFiles) && order.customerFiles.length > 0 && (
+                                {Array.isArray(order.customerFiles) && order.customerFiles.length > 0 && can('bestanden') && (
                                   <section className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
                                     <h5 className="text-xs font-extrabold uppercase tracking-widest text-emerald-900">
                                       Door klant aangeleverde bestanden
@@ -3930,7 +4003,7 @@ export default function App() {
                                           </label>
                                           <button
                                             type="button"
-                                            disabled={quickImposeBusyId === file.id}
+                                            disabled={quickImposeBusyId === file.id || !can('prepress')}
                                             onClick={() => quickImpose(fileUrl, file, Number(fileLine?.widthMm || order.customWidth) || undefined, Number(fileLine?.heightMm || order.customHeight) || undefined)}
                                             className="rounded-lg bg-[#e31c24] px-3 py-2 text-[10px] font-bold text-white hover:bg-[#b8141a] disabled:opacity-50"
                                           >
@@ -3939,7 +4012,8 @@ export default function App() {
                                           <button
                                             type="button"
                                             onClick={() => setImpositionFileId(file.id)}
-                                            className="rounded-lg bg-slate-900 px-3 py-2 text-[10px] font-bold text-white hover:bg-slate-700"
+                                            disabled={!can('prepress')}
+                                            className="rounded-lg bg-slate-900 px-3 py-2 text-[10px] font-bold text-white hover:bg-slate-700 disabled:opacity-50"
                                           >
                                             Inslaan
                                           </button>
@@ -4213,6 +4287,7 @@ export default function App() {
                                   <span className="text-[9px] uppercase font-bold text-slate-400 block font-mono">Nieuwe Status</span>
                                   <select
                                     value={adminStatusInputs[order.id]?.status || order.status || 'Ingediend'}
+                                    disabled={!can('status_wijzigen')}
                                     onChange={(e) => {
                                       const val = e.target.value;
                                       setAdminStatusInputs(prev => ({
@@ -4429,6 +4504,50 @@ export default function App() {
 
                     {staffError && (
                       <p className="text-xs text-rose-600 font-semibold mt-2 text-left">{staffError}</p>
+                    )}
+
+                    {isOwner && staffList.length > 0 && (
+                      <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4 text-left space-y-4">
+                        <div>
+                          <h4 className="text-sm font-extrabold text-slate-900">Rechten per medewerker</h4>
+                          <p className="text-xs text-slate-500">Vink aan wat deze persoon mag. Een medewerker logt in met de eigen naam en het wachtwoord dat u hier instelt. Wie inlogt met het filiaalwachtwoord heeft alle rechten van het backoffice, maar niet die van de beheerder.</p>
+                        </div>
+                        {staffList.map((st) => (
+                          <div key={st.id} className="rounded-lg border border-slate-200 p-3 space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-xs font-extrabold text-slate-800">{st.name} <span className="font-semibold text-slate-500">· {st.branch || 'geen filiaal'}</span></p>
+                              <span className={`text-[10px] font-bold ${staffAccess[st.id]?.passwordSet ? 'text-emerald-700' : 'text-amber-700'}`}>{staffAccess[st.id]?.passwordSet ? 'Persoonlijke login actief' : 'Nog geen eigen wachtwoord'}</span>
+                            </div>
+                            <div className="grid gap-1.5 sm:grid-cols-2">
+                              {PERMISSION_LABELS.map(([key, label]) => (
+                                <label key={key} className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={(accessDraft[st.id] || []).includes(key)}
+                                    onChange={(e) => setAccessDraft((current) => {
+                                      const list = current[st.id] || [];
+                                      return { ...current, [st.id]: e.target.checked ? [...list, key] : list.filter((item) => item !== key) };
+                                    })}
+                                  />
+                                  {label}
+                                </label>
+                              ))}
+                            </div>
+                            <div className="flex gap-2">
+                              <input
+                                type="password"
+                                autoComplete="new-password"
+                                placeholder={staffAccess[st.id]?.passwordSet ? 'Nieuw wachtwoord (leeg laten = ongewijzigd)' : 'Wachtwoord (min. 8 tekens)'}
+                                value={accessPassword[st.id] || ''}
+                                onChange={(e) => setAccessPassword((current) => ({ ...current, [st.id]: e.target.value }))}
+                                className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                              />
+                              <button type="button" onClick={() => saveStaffAccess(st.id)} className="shrink-0 rounded-lg bg-slate-900 px-3 py-2 text-[11px] font-bold text-white hover:bg-slate-700">Opslaan</button>
+                            </div>
+                          </div>
+                        ))}
+                        {accessMessage && <p role="status" className="text-xs font-semibold text-slate-700">{accessMessage}</p>}
+                      </div>
                     )}
 
                     {/* Staff team table list */}
