@@ -35,7 +35,8 @@ import {
   Users,
   PlusCircle,
   ClipboardList,
-  ChevronDown
+  ChevronDown,
+  Shirt
 } from 'lucide-react';
 
 import { PrintProduct, FileAnalysis, FitMode, PrototypeStateOverride, StickerShape } from './types';
@@ -52,8 +53,10 @@ import { saveOrderToComputer } from './utils/saveOrderFolder';
 import { BRANCH_DETAILS } from './utils/branches';
 const BackofficeOverview = lazy(() => import('./components/BackofficeOverview'));
 const TicketProductUploadPortal = lazy(() => import('./components/TicketProductUploadPortal'));
+const TshirtDesigner = lazy(() => import('./components/tshirt/TshirtDesigner'));
 const lazyFallback = <div className="p-6 text-center text-sm text-slate-500" role="status">Laden…</div>;
 import { FileThumb } from './components/ticket/TicketTools';
+import { TshirtOrderBox } from './components/tshirt/TshirtOrderBox';
 
 function TrackingQr({ value, size = 150 }: { value: string; size?: number }) {
   const [src, setSrc] = useState<string>('');
@@ -178,12 +181,13 @@ export default function App() {
   const [prototypeOverride, setPrototypeOverride] = useState<PrototypeStateOverride>('auto');
 
   // New Full-Stack Backoffice & Customer Details states
-  type PortalName = 'landing' | 'client' | 'admin' | 'ticket';
-  const PORTAL_PATHS: Record<PortalName, string> = { landing: '/', client: '/klantportal', admin: '/backoffice', ticket: '/opdrachtbon' };
+  type PortalName = 'landing' | 'client' | 'admin' | 'ticket' | 'tshirt';
+  const PORTAL_PATHS: Record<PortalName, string> = { landing: '/', client: '/klantportal', admin: '/backoffice', ticket: '/opdrachtbon', tshirt: '/tshirt' };
   const portalFromPath = (): PortalName => {
     const path = window.location.pathname.replace(/\/+$/, '') || '/';
     if (path === '/orders' || path === '/backoffice') return 'admin';
     if (path === '/klantportal') return 'client';
+    if (path === '/tshirt') return 'tshirt';
     if (path === '/opdrachtbon') return 'admin';
     return 'landing';
   };
@@ -2612,6 +2616,43 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
               </a>
             </motion.div>
 
+            {/* T-SHIRT ONTWERPEN CARD */}
+            <motion.div
+              whileHover={{ scale: 1.02, y: -4 }}
+              whileTap={{ scale: 0.98 }}
+              className="h-full"
+            >
+              <button
+                type="button"
+                onClick={() => setActivePortal('tshirt')}
+                className="w-full h-full text-left bg-slate-900/60 hover:bg-slate-900 border border-slate-800 hover:border-sky-400/60 rounded-3xl p-8 flex flex-col justify-between gap-6 cursor-pointer transition-all duration-300 shadow-xl group hover:shadow-sky-400/5 relative overflow-hidden"
+              >
+                <div className="absolute top-0 right-0 w-32 h-32 bg-sky-400/5 rounded-full blur-2xl group-hover:bg-sky-400/10 transition-colors"></div>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="p-3 bg-sky-400/10 text-sky-300 border border-sky-400/25 rounded-2xl">
+                      <Shirt className="w-6 h-6" />
+                    </div>
+                    <span className="text-[10px] uppercase font-bold tracking-widest text-sky-300 bg-sky-400/10 border border-sky-400/20 px-2.5 py-1 rounded-full">
+                      DTF-bedrukking
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    <h3 className="font-extrabold text-lg sm:text-xl text-white group-hover:text-sky-300 transition-colors">
+                      T-shirt ontwerpen
+                    </h3>
+                    <p className="text-xs text-slate-400 leading-relaxed font-sans">
+                      Upload uw ontwerp, kies voor- en/of achterkant, kleur en maten en zie direct de prijs. Vanaf 1 stuk.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-4 border-t border-slate-800/80 w-full text-xs font-bold text-sky-300 group-hover:text-sky-200 transition-colors">
+                  <span>Ontwerp je T-shirt</span>
+                  <span className="text-sm transform group-hover:translate-x-1.5 transition-transform">&rarr;</span>
+                </div>
+              </button>
+            </motion.div>
+
             {/* 4. OPDRACHTBON CARD */}
             <motion.div
               whileHover={{ scale: 1.02, y: -4 }}
@@ -2676,6 +2717,10 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
         </footer>
       </div>
     );
+  }
+
+  if (activePortal === 'tshirt') {
+    return <Suspense fallback={lazyFallback}><TshirtDesigner onBack={() => setActivePortal('landing')} /></Suspense>;
   }
 
   if (activePortal === 'ticket') {
@@ -4249,6 +4294,8 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                                       )}
                                     </div>
                                   </div>
+
+                                  {order.tshirt_json && <TshirtOrderBox order={order} />}
 
                                   <div className="bg-amber-50/50 border border-amber-100 p-3 rounded-xl">
                                     <span className="text-[10px] uppercase font-bold text-amber-805 block mb-1">Opmerkingen Klant</span>
