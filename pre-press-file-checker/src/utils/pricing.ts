@@ -267,3 +267,29 @@ export function calculateSelfservicePrint(input: { size: 'A4' | 'A3'; color: boo
     source: `Selfservice-staffel · ${color ? 'kleur' : 'zwart-wit'} ${size} · ${pages} pagina's à € ${rate.toFixed(2).replace('.', ',')}${surcharge ? ` · papiertoeslag € ${surcharge.toFixed(2).replace('.', ',')}` : ''}`,
   };
 }
+
+/* ------------------------------ Posters ------------------------------ */
+/** Posterprijzen per stuk incl. btw uit FDPBRAIN (Ultra spoed posters en posters zwart-wit). */
+export const POSTER_FORMATS = [
+  { id: 'A2', widthMm: 420, heightMm: 594, color: { price: 12.95, sku: '210000000072' }, bw: { price: 8.95, sku: '210000000266' } },
+  { id: 'A1', widthMm: 594, heightMm: 841, color: { price: 19.95, sku: '210000000074' }, bw: { price: 12.95, sku: '210000000816' } },
+  { id: 'A0', widthMm: 841, heightMm: 1189, color: { price: 29.95, sku: '210000000076' }, bw: { price: 19.95, sku: '210000000814' } },
+  { id: 'B2', widthMm: 500, heightMm: 707, color: { price: 14.95, sku: '210000000078' }, bw: { price: 9.95, sku: '210000000820' } },
+  { id: 'B1', widthMm: 707, heightMm: 1000, color: { price: 24.95, sku: '210000000080' }, bw: { price: 16.95, sku: '210000000818' } },
+] as const;
+
+export function calculatePoster(input: { formatId: string; color: boolean; quantity: number }) {
+  const format = POSTER_FORMATS.find((entry) => entry.id === input.formatId) ?? POSTER_FORMATS[0];
+  if (!Number.isInteger(input.quantity) || input.quantity <= 0) return { valid: false as const, warning: 'Vul een geldig aantal in.' };
+  const tariff = input.color ? format.color : format.bw;
+  const total = Math.round(tariff.price * input.quantity * 100) / 100;
+  return {
+    valid: true as const,
+    warning: '',
+    format,
+    unitPrice: tariff.price,
+    total,
+    description: `Poster ${format.id} ${input.color ? 'kleur' : 'zwart-wit'}`,
+    source: `FDPBRAIN · SKU ${tariff.sku} · ${input.quantity} × € ${tariff.price.toFixed(2).replace('.', ',')}`,
+  };
+}

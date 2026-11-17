@@ -18,6 +18,7 @@ import {
   useCatalog,
 } from './ticket/TicketTools';
 import { TshirtApplied, TshirtCalculatorPanel } from './tshirt/TshirtCalculatorPanel';
+import { CustomApplied, CustomKind, CustomProductMenu, CustomProductPanel } from './ticket/CustomProductPanel';
 
 interface TicketStaff {
   id: string;
@@ -382,6 +383,8 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
   const [createdTicket, setCreatedTicket] = useState<CreatedTicket | null>(null);
   const [specOpenIndex, setSpecOpenIndex] = useState<number | null>(null);
   const [calculatorIndex, setCalculatorIndex] = useState<number | null>(null);
+  const [customMenuOpen, setCustomMenuOpen] = useState(false);
+  const [customPanel, setCustomPanel] = useState<{ index: number; kind: CustomKind } | null>(null);
   const [prepressIndex, setPrepressIndex] = useState<number | null>(null);
   const [uploadStates, setUploadStates] = useState<Record<number, 'uploading' | 'done' | 'error'>>({});
   const [receivedFiles, setReceivedFiles] = useState<Record<string, TicketFileStatus[]>>({});
@@ -443,6 +446,38 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
       priceSource: applied.result.source,
     });
     setCalculatorIndex(null);
+  };
+
+  /** Customised product (+): gebruik een lege regel of voeg er een toe en open de juiste calculator. */
+  const pickCustomProduct = (kind: CustomKind) => {
+    const lastIndex = lines.length - 1;
+    const last = lines[lastIndex];
+    // Een regel zonder prijs en zonder bestand is nog niet ingevuld: die gebruiken we.
+    const reuse = last && !last.file && !last.price.trim() && last.fixedTotal === null;
+    const index = reuse ? lastIndex : lines.length;
+    if (!reuse) setLines((current) => [...current, emptyLine()]);
+    setCustomMenuOpen(false);
+    setCalculatorIndex(null);
+    setSpecOpenIndex(null);
+    setCustomPanel({ index, kind });
+  };
+
+  const applyCustomProduct = (lineIndex: number, applied: CustomApplied) => {
+    updateLine(lineIndex, {
+      description: applied.description,
+      productId: '',
+      category: applied.category,
+      width: String(applied.widthMm),
+      height: String(applied.heightMm),
+      printSides: applied.printSides,
+      quantity: String(applied.quantity),
+      price: (applied.total / applied.quantity).toFixed(2).replace('.', ','),
+      vatIncluded: true,
+      fixedTotal: applied.total,
+      sku: '',
+      priceSource: applied.source,
+    });
+    setCustomPanel(null);
   };
 
   /** Upload: altijd het origineel, plus de op maat gezette versie uit de pre-press check als die er is. */
@@ -1460,11 +1495,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                         <Calculator className="h-3.5 w-3.5" /> {calculatorKindFor(line) === 'banner' ? 'Banner berekenen' : calculatorKindFor(line) === 'tshirt' ? 'T-shirt berekenen' : 'Formaat en prijs berekenen'}
                       </button>
                     )}
-                    {calculatorKindFor(line) !== 'tshirt' && (
-                      <button type="button" onClick={() => { updateLine(index, { description: line.description || 'T-shirt DTF', category: 'T-shirt' }); setCalculatorIndex(index); }} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 font-bold text-slate-700 hover:bg-slate-50">
-                        <Calculator className="h-3.5 w-3.5" /> T-shirt (DTF)
-                      </button>
-                    )}
+
                   </div>
                   </div>
                   )}
@@ -1540,7 +1571,7 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                   <p className="py-1 text-base font-semibold tabular-nums">{money(totals.lineTotals[index] ?? 0)}</p>
                 </div>
 
-                <button type="button" aria-label={`Regel ${index + 1} verwijderen`} disabled={lines.length === 1} onClick={() => setLines((current) => current.filter((_, row) => row !== index))} className="flex h-8 w-8 items-center justify-center justify-self-end rounded-md text-slate-400 hover:bg-rose-50 hover:text-[#e31c24] disabled:cursor-not-allowed disabled:opacity-30">
+                <button type="button" aria-label={`Regel ${index + 1} verwijderen`} disabled={lines.length === 1} onClick={() => { setCustomPanel(null); setLines((current) => current.filter((_, row) => row !== index)); }} className="flex h-8 w-8 items-center justify-center justify-self-end rounded-md text-slate-400 hover:bg-rose-50 hover:text-[#e31c24] disabled:cursor-not-allowed disabled:opacity-30">
                   <Trash2 className="h-4 w-4" />
                 </button>
 
@@ -1562,6 +1593,9 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                   </div>
                 )}
 
+                {customPanel?.index === index && (
+                  <CustomProductPanel kind={customPanel.kind} onApply={(applied) => applyCustomProduct(index, applied)} onClose={() => setCustomPanel(null)} />
+                )}
                 {calculatorIndex === index && calculatorKindFor(line) === 'tshirt' && (
                   <TshirtCalculatorPanel onApply={(applied) => applyTshirt(index, applied)} onClose={() => setCalculatorIndex(null)} />
                 )}
@@ -1584,9 +1618,19 @@ export default function OrderTicketWorkspace({ products, staff, onOrderCreated, 
                 : 'De productcatalogus uit Notion is nog niet gekoppeld; vul omschrijving en prijs met de hand in. Bij stickers en banners verschijnt vanzelf een calculator.'}
           </p>
 
-          <button type="button" onClick={() => setLines((current) => [...current, emptyLine(products[0])])} className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs font-bold text-slate-600 hover:border-slate-500 hover:text-slate-900">
-            <Plus className="h-3.5 w-3.5" /> Regel toevoegen
-          </button>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => setLines((current) => [...current, emptyLine(products[0])])} className="inline-flex min-h-[44px] items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs font-bold text-slate-600 hover:border-slate-500 hover:text-slate-900">
+              <Plus className="h-3.5 w-3.5" /> Regel toevoegen
+            </button>
+            <button type="button" onClick={() => setCustomMenuOpen((open) => !open)} aria-expanded={customMenuOpen} title="Customised product toevoegen" className="inline-flex min-h-[44px] items-center gap-1.5 rounded-md bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700">
+              <Plus className="h-4 w-4" /> Customised product
+            </button>
+          </div>
+          {customMenuOpen && (
+            <div className="mt-2">
+              <CustomProductMenu onPick={pickCustomProduct} onClose={() => setCustomMenuOpen(false)} />
+            </div>
+          )}
 
           {/* Notities + totalen */}
           <section className="mt-6 grid gap-6 sm:grid-cols-[1fr_17rem]">

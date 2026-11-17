@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
-import { Calculator, X } from 'lucide-react';
+import { Calculator, Plus, Trash2, X } from 'lucide-react';
 import {
   TSHIRT_COLORS,
   TSHIRT_DESIGN_FEE,
   TSHIRT_FORMATS,
+  TSHIRT_MAX_PRINTS,
   TSHIRT_SIZES,
   TshirtColor,
   TshirtFormat,
+  TshirtPrint,
   TshirtPriceResult,
   TshirtSide,
   TshirtSize,
@@ -29,12 +31,12 @@ export function TshirtCalculatorPanel({ onApply, onClose }: { onApply: (applied:
   const [color, setColor] = useState<TshirtColor>('wit');
   const [ownShirts, setOwnShirts] = useState(false);
   const [designFee, setDesignFee] = useState(false);
-  const [sides, setSides] = useState<Record<TshirtSide, TshirtFormat | null>>({ voor: 'a4', achter: null });
+  const [prints, setPrints] = useState<TshirtPrint[]>([{ side: 'voor', format: 'a4' }]);
   const [sizes, setSizes] = useState<Partial<Record<TshirtSize, number>>>({});
 
-  const prints = (['voor', 'achter'] as TshirtSide[]).filter((side) => sides[side]).map((side) => ({ side, format: sides[side]! }));
-  const result = calculateTshirtPrice({ color, sizes, prints, ownShirts, designFee });
-  const formatOptions: Array<TshirtFormat | null> = [null, 'klein', 'a4', 'a3'];
+  const ordered = [...prints].sort((a, b) => (a.side === b.side ? 0 : a.side === 'voor' ? -1 : 1));
+  const result = calculateTshirtPrice({ color, sizes, prints: ordered, ownShirts, designFee });
+  const updatePrint = (index: number, change: Partial<TshirtPrint>) => setPrints((current) => current.map((print, row) => (row === index ? { ...print, ...change } : print)));
 
   return (
     <div className="col-span-full rounded-xl border border-slate-300 bg-slate-50 p-4">
@@ -57,16 +59,29 @@ export function TshirtCalculatorPanel({ onApply, onClose }: { onApply: (applied:
             ))}
             <button type="button" className={chip(ownShirts)} onClick={() => setOwnShirts(true)}>Eigen shirt klant</button>
           </div>
-          {(['voor', 'achter'] as TshirtSide[]).map((side) => (
-            <div key={side} className="flex flex-wrap items-center gap-1.5">
-              <span className="w-16 text-[10px] font-bold uppercase text-slate-500">{side === 'voor' ? 'Voorkant' : 'Achterkant'}</span>
-              {formatOptions.map((format) => (
-                <button key={String(format)} type="button" className={chip(sides[side] === format)} onClick={() => setSides((current) => ({ ...current, [side]: format }))}>
-                  {format ? TSHIRT_FORMATS[format].short : 'Geen'}
-                </button>
-              ))}
-            </div>
-          ))}
+          <div className="space-y-1.5">
+            <span className="block text-[10px] font-bold uppercase text-slate-500">Opdrukken (per shirt)</span>
+            {prints.map((print, index) => (
+              <div key={index} className="flex flex-wrap items-center gap-1.5">
+                <span className="w-6 text-xs font-bold text-slate-500">{index + 1}.</span>
+                {(['voor', 'achter'] as TshirtSide[]).map((side) => (
+                  <button key={side} type="button" className={chip(print.side === side)} onClick={() => updatePrint(index, { side })}>{side === 'voor' ? 'Voor' : 'Achter'}</button>
+                ))}
+                <span className="mx-1 h-6 w-px bg-slate-300" />
+                {(Object.keys(TSHIRT_FORMATS) as TshirtFormat[]).map((format) => (
+                  <button key={format} type="button" className={chip(print.format === format)} onClick={() => updatePrint(index, { format })}>{TSHIRT_FORMATS[format].short}</button>
+                ))}
+                {prints.length > 1 && (
+                  <button type="button" aria-label={`Opdruk ${index + 1} verwijderen`} onClick={() => setPrints((current) => current.filter((_, row) => row !== index))} className="rounded-md p-2 text-slate-500 hover:bg-rose-50 hover:text-[#e31c24]"><Trash2 className="h-4 w-4" /></button>
+                )}
+              </div>
+            ))}
+            {prints.length < TSHIRT_MAX_PRINTS && (
+              <button type="button" onClick={() => setPrints((current) => [...current, { side: 'voor', format: 'klein' }])} className="inline-flex min-h-[40px] items-center gap-1 rounded-lg border border-dashed border-slate-400 px-3 text-xs font-bold text-slate-700 hover:bg-white">
+                <Plus className="h-3.5 w-3.5" /> Extra opdruk
+              </button>
+            )}
+          </div>
           <div className="flex flex-wrap items-end gap-2">
             {TSHIRT_SIZES.map((size) => (
               <label key={size} className="space-y-0.5 text-center">
@@ -100,14 +115,15 @@ export function TshirtCalculatorPanel({ onApply, onClose }: { onApply: (applied:
             type="button"
             disabled={!result.valid}
             onClick={() => {
-              const first = TSHIRT_FORMATS[prints[0].format];
-              onApply({ result, quantity: result.quantity, widthMm: first.widthMm, heightMm: first.heightMm, printSides: prints.length === 2 ? 'double' : 'single' });
+              const first = TSHIRT_FORMATS[ordered[0].format];
+              const bothSides = ordered.some((print) => print.side === 'voor') && ordered.some((print) => print.side === 'achter');
+              onApply({ result, quantity: result.quantity, widthMm: first.widthMm, heightMm: first.heightMm, printSides: bothSides ? 'double' : 'single' });
             }}
             className="mt-3 rounded-lg bg-[#e31c24] px-3 py-2 text-xs font-bold text-white hover:bg-[#b8141a] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Overnemen in regel
           </button>
-          {prints.length === 2 && <p className="mt-2 text-[10px] text-slate-500">Twee ontwerpen? Voeg het bestand voor de achterkant toe via “Extra info en bijlagen” in het backoffice.</p>}
+          {prints.length > 1 && <p className="mt-2 text-[10px] text-slate-500">Meerdere ontwerpen? Voeg de extra bestanden toe via “Extra info en bijlagen” in het backoffice.</p>}
         </div>
       </div>
     </div>

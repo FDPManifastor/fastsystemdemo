@@ -1,129 +1,153 @@
-import React, { useRef } from 'react';
-import { TSHIRT_COLORS, TSHIRT_FORMATS, TshirtColor, TshirtFormat, TshirtSide } from '../../utils/tshirtPricing';
+import React, { forwardRef, useRef } from 'react';
+import {
+  TSHIRT_COLORS,
+  TSHIRT_MAX_LONG_MM,
+  TSHIRT_MAX_SHORT_MM,
+  TSHIRT_MIN_MM,
+  TshirtColor,
+  TshirtDesign,
+  TshirtSide,
+} from '../../utils/tshirtPricing';
 
-/** Plaats van het ontwerp binnen het printvak: schaal (0,2–1) en positie in de vrije ruimte (0–1). */
-export interface DesignPlacement {
-  scale: number;
-  offsetX: number;
-  offsetY: number;
+/** Opdruk met de afbeelding die erbij hoort (url = data-URL of serveradres). */
+export interface PlacedDesign extends TshirtDesign {
+  url?: string;
 }
 
-export const DEFAULT_PLACEMENT: DesignPlacement = { scale: 1, offsetX: 0.5, offsetY: 0 };
+/** SVG-eenheden per mm: het lijf (200 eenheden breed) staat voor een shirt van ca. 52 cm breed en 73 cm lang. */
+export const UNITS_PER_MM = 200 / 520;
+const CENTER_X = 200;
+const COLLAR_Y = 30;
+/** Grenzen van het shirt (incl. mouwen) in mm, voor het midden van een opdruk. */
+const BOUNDS = { minX: (28 - CENTER_X) / UNITS_PER_MM, maxX: (372 - CENTER_X) / UNITS_PER_MM, minY: 0, maxY: (310 - COLLAR_Y) / UNITS_PER_MM };
 
-/** SVG-eenheden per mm: het lijf (200 eenheden breed) staat voor een shirt van ca. 52 cm. */
-const UNITS_PER_MM = 200 / 520;
-
-/** Printvak op het shirt in SVG-eenheden. */
-export function printArea(side: TshirtSide, format: TshirtFormat) {
-  const spec = TSHIRT_FORMATS[format];
-  const width = spec.widthMm * UNITS_PER_MM;
-  const height = spec.heightMm * UNITS_PER_MM;
-  if (side === 'voor' && format === 'klein') {
-    // Klein logo links op de borst (voor de drager), dus rechts in beeld.
-    return { x: 248 - width / 2, y: 92, width, height };
-  }
-  return { x: 200 - width / 2, y: side === 'voor' ? 84 : 72, width, height };
-}
-
-/** Afmeting van het ontwerp binnen het vak (contain), in fracties van het vak. */
-export function fittedSize(imageWidth: number, imageHeight: number, format: TshirtFormat) {
-  const spec = TSHIRT_FORMATS[format];
-  const imageRatio = imageWidth / imageHeight;
-  const areaRatio = spec.widthMm / spec.heightMm;
-  return imageRatio > areaRatio
-    ? { widthMm: spec.widthMm, heightMm: spec.widthMm / imageRatio }
-    : { widthMm: spec.heightMm * imageRatio, heightMm: spec.heightMm };
-}
-
-/** Werkelijke printmaat in mm na schalen. */
-export function printedSizeMm(imageWidth: number, imageHeight: number, format: TshirtFormat, scale: number) {
-  const fitted = fittedSize(imageWidth, imageHeight, format);
-  return { widthMm: fitted.widthMm * scale, heightMm: fitted.heightMm * scale };
-}
+export const toSvgX = (xMm: number) => CENTER_X + xMm * UNITS_PER_MM;
+export const toSvgY = (yMm: number) => COLLAR_Y + yMm * UNITS_PER_MM;
 
 const SHIRT_PATH = {
-  voor: 'M150 40 C168 62 232 62 250 40 L306 58 L372 128 L332 162 L300 136 L300 410 Q200 424 100 410 L100 136 L68 162 L28 128 L94 58 Z',
-  achter: 'M150 40 C172 50 228 50 250 40 L306 58 L372 128 L332 162 L300 136 L300 410 Q200 424 100 410 L100 136 L68 162 L28 128 L94 58 Z',
+  voor: 'M150 30 C168 52 232 52 250 30 L306 46 L372 112 L334 146 L300 120 L300 308 Q200 318 100 308 L100 120 L66 146 L28 112 L94 46 Z',
+  achter: 'M150 30 C172 40 228 40 250 30 L306 46 L372 112 L334 146 L300 120 L300 308 Q200 318 100 308 L100 120 L66 146 L28 112 L94 46 Z',
 };
 
-export function TshirtMockup({
-  color,
-  side,
-  format,
-  imageUrl,
-  imageWidth,
-  imageHeight,
-  placement = DEFAULT_PLACEMENT,
-  onPlacementChange,
-  showGuide = true,
-  className = '',
-}: {
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+/** Begrenst de maat zodat de opdruk binnen A3 blijft en niet kleiner wordt dan 2 cm. */
+export function clampScale(widthMm: number, heightMm: number, factor: number) {
+  const long = Math.max(widthMm, heightMm);
+  const short = Math.min(widthMm, heightMm);
+  const maxFactor = Math.min(TSHIRT_MAX_LONG_MM / long, TSHIRT_MAX_SHORT_MM / short);
+  const minFactor = TSHIRT_MIN_MM / long;
+  return clamp(factor, minFactor, maxFactor);
+}
+
+export function clampPosition<T extends { xMm: number; yMm: number }>(design: T): T {
+  return { ...design, xMm: clamp(design.xMm, BOUNDS.minX, BOUNDS.maxX), yMm: clamp(design.yMm, BOUNDS.minY, BOUNDS.maxY) };
+}
+
+type DragState =
+  | { mode: 'move'; id: string; startX: number; startY: number; start: PlacedDesign }
+  | { mode: 'resize'; id: string; sx: -1 | 0 | 1; sy: -1 | 0 | 1; start: PlacedDesign };
+
+const HANDLES: Array<{ sx: -1 | 0 | 1; sy: -1 | 0 | 1; cursor: string }> = [
+  { sx: -1, sy: -1, cursor: 'nwse-resize' }, { sx: 0, sy: -1, cursor: 'ns-resize' }, { sx: 1, sy: -1, cursor: 'nesw-resize' },
+  { sx: 1, sy: 0, cursor: 'ew-resize' }, { sx: 1, sy: 1, cursor: 'nwse-resize' }, { sx: 0, sy: 1, cursor: 'ns-resize' },
+  { sx: -1, sy: 1, cursor: 'nesw-resize' }, { sx: -1, sy: 0, cursor: 'ew-resize' },
+];
+
+/**
+ * Shirt met opdrukken. Opdrukken kunnen overal op het shirt staan: slepen om te verplaatsen,
+ * aan een hoek of zijkant trekken om groter of kleiner te maken (verhouding blijft gelijk).
+ */
+export const TshirtCanvas = forwardRef<SVGSVGElement, {
   color: TshirtColor;
   side: TshirtSide;
-  format: TshirtFormat | null;
-  imageUrl?: string;
-  imageWidth?: number;
-  imageHeight?: number;
-  placement?: DesignPlacement;
-  onPlacementChange?: (placement: DesignPlacement) => void;
-  showGuide?: boolean;
+  designs: PlacedDesign[];
+  selectedId?: string | null;
+  onSelect?: (id: string | null) => void;
+  onChange?: (design: PlacedDesign) => void;
+  emptyHint?: boolean;
   className?: string;
-}) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const drag = useRef<{ startX: number; startY: number; start: DesignPlacement; freeX: number; freeY: number } | null>(null);
+}>(function TshirtCanvas({ color, side, designs, selectedId = null, onSelect, onChange, emptyHint = false, className = '' }, forwardedRef) {
+  const localRef = useRef<SVGSVGElement | null>(null);
+  const drag = useRef<DragState | null>(null);
   const dark = color === 'zwart';
   const fill = TSHIRT_COLORS[color].hex;
   const stroke = dark ? '#3a3d45' : '#cbd5e1';
-  const area = format ? printArea(side, format) : null;
+  const editable = Boolean(onChange);
+  const clipId = `clip-${color}-${side}-${editable ? 'edit' : 'view'}`;
+  const gradientId = `shade-${color}-${side}-${editable ? 'edit' : 'view'}`;
 
-  let design: { x: number; y: number; width: number; height: number; freeX: number; freeY: number } | null = null;
-  if (area && format && imageUrl && imageWidth && imageHeight) {
-    const fitted = fittedSize(imageWidth, imageHeight, format);
-    const width = fitted.widthMm * UNITS_PER_MM * placement.scale;
-    const height = fitted.heightMm * UNITS_PER_MM * placement.scale;
-    const freeX = area.width - width;
-    const freeY = area.height - height;
-    design = { x: area.x + freeX * placement.offsetX, y: area.y + freeY * placement.offsetY, width, height, freeX, freeY };
-  }
-
-  const toSvgUnits = (clientDelta: number) => {
-    const svg = svgRef.current;
-    if (!svg) return 0;
-    return clientDelta * (400 / svg.getBoundingClientRect().width);
+  const setRef = (node: SVGSVGElement | null) => {
+    localRef.current = node;
+    if (typeof forwardedRef === 'function') forwardedRef(node);
+    else if (forwardedRef) forwardedRef.current = node;
   };
 
-  const onPointerDown = (event: React.PointerEvent) => {
-    if (!onPlacementChange || !design) return;
-    (event.target as Element).setPointerCapture?.(event.pointerId);
-    drag.current = { startX: event.clientX, startY: event.clientY, start: placement, freeX: design.freeX, freeY: design.freeY };
+  /** Schermpositie → mm op het shirt. */
+  const toMm = (event: React.PointerEvent) => {
+    const svg = localRef.current;
+    if (!svg) return { x: 0, y: 0 };
+    const matrix = svg.getScreenCTM();
+    if (!matrix) return { x: 0, y: 0 };
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    const local = point.matrixTransform(matrix.inverse());
+    return { x: (local.x - CENTER_X) / UNITS_PER_MM, y: (local.y - COLLAR_Y) / UNITS_PER_MM };
   };
+
+  const begin = (event: React.PointerEvent, state: DragState) => {
+    event.stopPropagation();
+    event.preventDefault();
+    localRef.current?.setPointerCapture?.(event.pointerId);
+    drag.current = state;
+    onSelect?.(state.id);
+  };
+
   const onPointerMove = (event: React.PointerEvent) => {
-    const current = drag.current;
-    if (!current || !onPlacementChange) return;
-    const dx = toSvgUnits(event.clientX - current.startX);
-    const dy = toSvgUnits(event.clientY - current.startY);
-    const clamp = (value: number) => Math.min(1, Math.max(0, value));
-    onPlacementChange({
-      ...current.start,
-      offsetX: current.freeX > 0.5 ? clamp(current.start.offsetX + dx / current.freeX) : 0.5,
-      offsetY: current.freeY > 0.5 ? clamp(current.start.offsetY + dy / current.freeY) : 0,
-    });
+    const state = drag.current;
+    if (!state || !onChange) return;
+    const pointer = toMm(event);
+    const start = state.start;
+    if (state.mode === 'move') {
+      onChange(clampPosition({ ...start, xMm: start.xMm + pointer.x - state.startX, yMm: start.yMm + pointer.y - state.startY }));
+      return;
+    }
+    // Schalen vanaf de tegenoverliggende hoek of zijde; de verhouding blijft gelijk.
+    const anchorX = start.xMm - state.sx * start.widthMm / 2;
+    const anchorY = start.yMm - state.sy * start.heightMm / 2;
+    const ratioX = state.sx ? Math.abs(pointer.x - anchorX) / start.widthMm : 0;
+    const ratioY = state.sy ? Math.abs(pointer.y - anchorY) / start.heightMm : 0;
+    const factor = clampScale(start.widthMm, start.heightMm, Math.max(ratioX, ratioY) || 1);
+    const widthMm = start.widthMm * factor;
+    const heightMm = start.heightMm * factor;
+    onChange(clampPosition({
+      ...start,
+      widthMm,
+      heightMm,
+      xMm: state.sx ? anchorX + state.sx * widthMm / 2 : start.xMm,
+      yMm: state.sy ? anchorY + state.sy * heightMm / 2 : start.yMm,
+    }));
   };
-  const onPointerUp = () => {
+
+  const endDrag = () => {
     drag.current = null;
   };
 
-  const gradientId = `shade-${color}-${side}`;
+  const selected = designs.find((design) => design.id === selectedId);
+  const handleSize = 9;
+
   return (
     <svg
-      ref={svgRef}
-      viewBox="0 0 400 440"
+      ref={setRef}
+      viewBox="0 0 400 340"
       role="img"
       aria-label={`T-shirt ${TSHIRT_COLORS[color].name.toLowerCase()}, ${side === 'voor' ? 'voorkant' : 'achterkant'}`}
       className={`touch-none select-none ${className}`}
       onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onPointerDown={() => onSelect?.(null)}
     >
       <defs>
         <linearGradient id={gradientId} x1="0" x2="1" y1="0" y2="0">
@@ -132,45 +156,74 @@ export function TshirtMockup({
           <stop offset="0.82" stopColor={dark ? '#000' : '#94a3b8'} stopOpacity="0" />
           <stop offset="1" stopColor={dark ? '#000' : '#94a3b8'} stopOpacity={dark ? 0.35 : 0.18} />
         </linearGradient>
-        <clipPath id={`clip-${color}-${side}`}>
+        <clipPath id={clipId}>
           <path d={SHIRT_PATH[side]} />
         </clipPath>
       </defs>
       <path d={SHIRT_PATH[side]} fill={fill} stroke={stroke} strokeWidth="2" strokeLinejoin="round" />
       <path d={SHIRT_PATH[side]} fill={`url(#${gradientId})`} />
-      {/* Kraag en naden */}
       {side === 'voor'
-        ? <path d="M150 40 C168 62 232 62 250 40" fill="none" stroke={stroke} strokeWidth="7" strokeLinecap="round" opacity="0.8" />
-        : <path d="M150 40 C172 50 228 50 250 40" fill="none" stroke={stroke} strokeWidth="5" strokeLinecap="round" opacity="0.8" />}
-      <path d="M100 136 L94 58 M300 136 L306 58" fill="none" stroke={stroke} strokeWidth="1.5" opacity="0.6" />
-      <path d="M44 144 L80 112 M356 144 L320 112" fill="none" stroke={stroke} strokeWidth="1.5" opacity="0.6" />
+        ? <path d="M150 30 C168 52 232 52 250 30" fill="none" stroke={stroke} strokeWidth="7" strokeLinecap="round" opacity="0.8" />
+        : <path d="M150 30 C172 40 228 40 250 30" fill="none" stroke={stroke} strokeWidth="5" strokeLinecap="round" opacity="0.8" />}
+      <path d="M100 120 L94 46 M300 120 L306 46" fill="none" stroke={stroke} strokeWidth="1.5" opacity="0.6" />
+      <path d="M44 128 L80 98 M356 128 L320 98" fill="none" stroke={stroke} strokeWidth="1.5" opacity="0.6" />
 
-      {design && imageUrl && (
-        <g clipPath={`url(#clip-${color}-${side})`}>
-          <image
-            href={imageUrl}
-            x={design.x}
-            y={design.y}
-            width={design.width}
-            height={design.height}
-            preserveAspectRatio="xMidYMid meet"
-            style={{ cursor: onPlacementChange ? 'move' : 'default' }}
-            onPointerDown={onPointerDown}
-          />
-        </g>
-      )}
-
-      {area && showGuide && (
+      {designs.length === 0 && emptyHint && (
         <g pointerEvents="none">
-          <rect x={area.x} y={area.y} width={area.width} height={area.height} fill={design ? 'none' : (dark ? 'rgba(255,255,255,0.06)' : 'rgba(148,163,184,0.10)')} stroke={dark ? '#94a3b8' : '#64748b'} strokeWidth="1.2" strokeDasharray="5 4" />
-          {!design && (
-            <text x={area.x + area.width / 2} y={area.y + area.height / 2} textAnchor="middle" dominantBaseline="middle" fontSize={format === 'klein' ? 7 : 12} fontWeight="600" fill={dark ? '#cbd5e1' : '#475569'}>
-              <tspan x={area.x + area.width / 2} dy="-0.6em">Plaats hier</tspan>
-              <tspan x={area.x + area.width / 2} dy="1.2em">je ontwerp</tspan>
-            </text>
-          )}
+          <rect x={toSvgX(-105)} y={toSvgY(80)} width={210 * UNITS_PER_MM} height={300 * UNITS_PER_MM} fill={dark ? 'rgba(255,255,255,0.06)' : 'rgba(148,163,184,0.10)'} stroke={dark ? '#94a3b8' : '#64748b'} strokeWidth="1.2" strokeDasharray="5 4" />
+          <text x={CENTER_X} y={toSvgY(230)} textAnchor="middle" fontSize="11" fontWeight="600" fill={dark ? '#cbd5e1' : '#475569'}>
+            <tspan x={CENTER_X} dy="-0.6em">Plaats hier</tspan>
+            <tspan x={CENTER_X} dy="1.2em">je ontwerp</tspan>
+          </text>
         </g>
       )}
+
+      <g clipPath={`url(#${clipId})`}>
+        {designs.map((design) => (
+          design.url ? (
+            <image
+              key={design.id}
+              href={design.url}
+              x={toSvgX(design.xMm - design.widthMm / 2)}
+              y={toSvgY(design.yMm - design.heightMm / 2)}
+              width={design.widthMm * UNITS_PER_MM}
+              height={design.heightMm * UNITS_PER_MM}
+              preserveAspectRatio="none"
+              style={{ cursor: editable ? 'move' : 'default' }}
+              onPointerDown={editable ? (event) => { const point = toMm(event); begin(event, { mode: 'move', id: design.id, startX: point.x, startY: point.y, start: design }); } : undefined}
+            />
+          ) : (
+            <rect key={design.id} x={toSvgX(design.xMm - design.widthMm / 2)} y={toSvgY(design.yMm - design.heightMm / 2)} width={design.widthMm * UNITS_PER_MM} height={design.heightMm * UNITS_PER_MM} fill="rgba(148,163,184,0.35)" />
+          )
+        ))}
+      </g>
+
+      {editable && selected && (() => {
+        const x = toSvgX(selected.xMm - selected.widthMm / 2);
+        const y = toSvgY(selected.yMm - selected.heightMm / 2);
+        const width = selected.widthMm * UNITS_PER_MM;
+        const height = selected.heightMm * UNITS_PER_MM;
+        return (
+          <g>
+            <rect x={x} y={y} width={width} height={height} fill="none" stroke="#0369a1" strokeWidth="1.2" strokeDasharray="4 3" pointerEvents="none" />
+            {HANDLES.map((handle) => (
+              <rect
+                key={`${handle.sx}${handle.sy}`}
+                x={x + (handle.sx + 1) / 2 * width - handleSize / 2}
+                y={y + (handle.sy + 1) / 2 * height - handleSize / 2}
+                width={handleSize}
+                height={handleSize}
+                rx="2"
+                fill="#fff"
+                stroke="#0369a1"
+                strokeWidth="1.5"
+                style={{ cursor: handle.cursor }}
+                onPointerDown={(event) => begin(event, { mode: 'resize', id: selected.id, sx: handle.sx, sy: handle.sy, start: selected })}
+              />
+            ))}
+          </g>
+        );
+      })()}
     </svg>
   );
-}
+});
