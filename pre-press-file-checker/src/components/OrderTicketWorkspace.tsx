@@ -96,10 +96,8 @@ const ORDER_STATUSES = [
 ];
 
 const COMPANY_FOOTER = [
-  'Bijlmerplein 100 | 1102 DA Amsterdam | Tel : 020 - 363 1445',
+  'Bijlmerplein 375 | 1102 DK Amsterdam | Tel : 020 - 363 1445',
   'www.fdprintingcenter.nl | amsterdam@fdprintingcenter.nl',
-  'Facebook.com/fdprinting',
-  'K.v.K. 302.730.16 | BTW 821452502B01',
 ];
 
 const emptyLine = (product?: PrintProduct, quantity = '1'): TicketLine => ({
