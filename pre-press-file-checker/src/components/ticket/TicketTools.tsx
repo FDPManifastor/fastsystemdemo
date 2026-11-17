@@ -459,7 +459,7 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
     return () => window.removeEventListener('resize', onResize);
   }, []);
   const canvasWidth = Math.max(420, Math.min(1300, viewport.w - 520));
-  const canvasHeight = Math.max(420, Math.min(1000, viewport.h - 220));
+  const canvasHeight = Math.max(420, Math.min(1000, viewport.h - 330));
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [error, setError] = useState('');
   const [fitMode, setFitMode] = useState<FitMode>('fit');

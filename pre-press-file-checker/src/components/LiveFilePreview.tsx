@@ -829,7 +829,9 @@ export default function LiveFilePreview({
 
         {/* Dynamic Visual Canvas Stage */}
         <div 
-          style={{ height: '500.067px', backgroundColor: '#dedede' }}
+          style={maxCanvasHeight
+            ? { minHeight: Math.round(computedHeight * (isDouble ? 2 : 1) + 110), maxWidth: Math.max(Math.round(computedWidth) + 140, 460), marginLeft: 'auto', marginRight: 'auto', width: '100%', backgroundColor: '#dedede' }
+            : { height: '500.067px', backgroundColor: '#dedede' }}
           className="rounded-xl p-5 border border-slate-300 flex flex-col items-center justify-center relative overflow-hidden group select-none"
         >
           
