@@ -1,6 +1,5 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { jsPDF } from 'jspdf';
 import QRCode from 'qrcode';
 import { 
   CheckCircle, 
@@ -46,10 +45,11 @@ import FeedbackPanel from './components/FeedbackPanel';
 import LiveFilePreview from './components/LiveFilePreview';
 import { FDLogo } from './components/FDLogo';
 import { renderPdfFile } from './utils/pdfLoader';
-import OrderTicketWorkspace from './components/OrderTicketWorkspace';
-import TicketProductUploadPortal from './components/TicketProductUploadPortal';
-import ImpositionModal from './components/ImpositionModal';
-import { autoImposeSettings, buildImposedPdf } from './utils/imposition';
+// Zware onderdelen worden pas geladen als ze nodig zijn, zodat de eerste pagina sneller opent.
+const OrderTicketWorkspace = lazy(() => import('./components/OrderTicketWorkspace'));
+const TicketProductUploadPortal = lazy(() => import('./components/TicketProductUploadPortal'));
+const ImpositionModal = lazy(() => import('./components/ImpositionModal'));
+const lazyFallback = <div className="p-6 text-center text-sm text-slate-500" role="status">Laden…</div>;
 import { FileThumb } from './components/ticket/TicketTools';
 
 function TrackingQr({ value, size = 150 }: { value: string; size?: number }) {
@@ -208,6 +208,7 @@ export default function App() {
     try {
       const response = await fetch(fileUrl, { credentials: 'include' });
       if (!response.ok) throw new Error('Het originele bestand kon niet worden opgehaald.');
+      const { autoImposeSettings, buildImposedPdf } = await import('./utils/imposition');
       const settings = autoImposeSettings(widthMm, heightMm, 2, quickCropMarks);
       const result = await buildImposedPdf(new Uint8Array(await response.arrayBuffer()), file.fileType, settings);
       const url = URL.createObjectURL(new Blob([result as unknown as BlobPart], { type: 'application/pdf' }));
@@ -1170,6 +1171,7 @@ export default function App() {
       const img = await loadImage(fileItem.imageSrcUrl);
       const rot = fileItem.rotation || 0;
       const fit = fileItem.fitMode || 'fill';
+      const { jsPDF } = await import('jspdf');
 
       if (pdfLayoutMode === 'single') {
         const marginMm = pdfWithCropMarks ? 12 : 0;
@@ -1508,7 +1510,7 @@ export default function App() {
     const o = trackedOrder;
     if (o.productUpload) {
       return (
-        <TicketProductUploadPortal
+        <Suspense fallback={lazyFallback}><TicketProductUploadPortal
           token={trackedOrderId || ''}
           orderNumber={String(o.orderNumber || '')}
           product={o.productUpload}
@@ -1516,7 +1518,7 @@ export default function App() {
           onUploadComplete={() => {
             if (trackedOrderId) void fetchTrackedOrder(trackedOrderId);
           }}
-        />
+        /></Suspense>
       );
     }
 
@@ -2377,12 +2379,12 @@ export default function App() {
           </div>
         </header>
         <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
-          <OrderTicketWorkspace
+          <Suspense fallback={lazyFallback}><OrderTicketWorkspace
             products={STANDARD_PRODUCTS}
             staff={[]}
             onViewOrders={() => setActivePortal('landing')}
             publicAccess
-          />
+          /></Suspense>
         </main>
       </div>
     );
@@ -3781,7 +3783,7 @@ export default function App() {
                                           </button>
                                         </div>
                                         {impositionFileId === file.id && (
-                                          <ImpositionModal
+                                          <Suspense fallback={lazyFallback}><ImpositionModal
                                             fileUrl={fileUrl}
                                             fileName={file.fileName}
                                             fileType={file.fileType}
@@ -3789,7 +3791,7 @@ export default function App() {
                                             defaultWidthMm={Number(fileLine?.widthMm || order.customWidth) || undefined}
                                             defaultHeightMm={Number(fileLine?.heightMm || order.customHeight) || undefined}
                                             onClose={() => setImpositionFileId(null)}
-                                          />
+                                          /></Suspense>
                                         )}
                                       </div>
                                       );

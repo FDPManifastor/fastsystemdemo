@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Calculator, CheckCircle, FileText, RotateCw, X } from 'lucide-react';
 import LiveFilePreview from '../LiveFilePreview';
 import { renderPdfFile } from '../../utils/pdfLoader';
-import { buildPrintReadyPdf } from '../../utils/printReady';
 import type { FitMode, PrintProduct } from '../../types';
 import {
   BANNER_MATERIALS,
@@ -551,6 +550,7 @@ export function TicketPrepressModal({ file, description, category, widthMm, heig
     setError('');
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
+      const { buildPrintReadyPdf } = await import('../../utils/printReady');
       const result = await buildPrintReadyPdf(bytes, getUploadFileType(file), { trimWidthMm: widthMm, trimHeightMm: heightMm, bleedMm, fit: fitMode, rotation });
       if (result.byteLength > MAX_UPLOAD_BYTES) {
         setError('Het printklare bestand is groter dan 20 MB. Gebruik het origineel of een kleiner bestand.');
