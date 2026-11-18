@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AgentPanel, { AGENT_COLORS, needsAttention, type AgentMessage } from './AgentPanel';
 
 type MapNode = {
   id: string;
@@ -119,10 +120,30 @@ export default function ProjectMap() {
   const [hiddenAreas, setHiddenAreas] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const [autoRotate, setAutoRotate] = useState(true);
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [messagesError, setMessagesError] = useState('');
 
   const placed = useMemo(() => (data ? layout(data.nodes) : []), [data]);
   const placedById = useMemo(() => new Map(placed.map((n) => [n.id, n])), [placed]);
   const areas = useMemo(() => Array.from(new Set(placed.map((n) => n.area))).sort(), [placed]);
+  // Berichten zonder (bekend) onderdeel komen bij de hoofdnode.
+  const rootId = useMemo(() => placed.find((n) => n.level === 0)?.id || null, [placed]);
+  const messagesByNode = useMemo(() => {
+    const map = new Map<string, AgentMessage[]>();
+    for (const message of messages) {
+      const nodeId = message.nodeId && placedById.has(message.nodeId) ? message.nodeId : rootId;
+      if (!nodeId) continue;
+      const list = map.get(nodeId) || [];
+      list.push(message);
+      map.set(nodeId, list);
+    }
+    return map;
+  }, [messages, placedById, rootId]);
+  const attention = useMemo(() => {
+    const list: { nodeId: string; message: AgentMessage }[] = [];
+    for (const [nodeId, list2] of messagesByNode) for (const message of list2) if (needsAttention(message)) list.push({ nodeId, message });
+    return list.sort((a, b) => b.message.createdAt.localeCompare(a.message.createdAt));
+  }, [messagesByNode]);
 
   // Alles wat het tekenen nodig heeft, zonder opnieuw renderen van React.
   const view = useRef({
@@ -139,6 +160,7 @@ export default function ProjectMap() {
     placed: [] as Placed[],
     byId: new Map<string, Placed>(),
     projected: [] as { id: string; sx: number; sy: number; r: number; depth: number }[],
+    badges: new Map<string, { count: number; color: string }>(),
   });
 
   useEffect(() => {
@@ -159,6 +181,15 @@ export default function ProjectMap() {
   useEffect(() => {
     view.current.autoRotate = autoRotate;
   }, [autoRotate]);
+  useEffect(() => {
+    const badges = new Map<string, { count: number; color: string }>();
+    for (const { nodeId, message } of attention) {
+      const entry = badges.get(nodeId);
+      if (entry) entry.count += 1;
+      else badges.set(nodeId, { count: 1, color: AGENT_COLORS[message.agent] || '#e5e7eb' });
+    }
+    view.current.badges = badges;
+  }, [attention]);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -178,6 +209,24 @@ export default function ProjectMap() {
       setLoading(false);
     }
   }, []);
+
+  const loadMessages = useCallback(async (refresh = false) => {
+    try {
+      const response = await fetch(`/api/admin/map/messages${refresh ? '?refresh=1' : ''}`, { credentials: 'include' });
+      if (!response.ok) return;
+      const body = await response.json();
+      setMessages(Array.isArray(body.messages) ? body.messages : []);
+      setMessagesError(body.ok ? '' : body.error || '');
+    } catch {
+      setMessagesError('Agentberichten konden niet worden geladen.');
+    }
+  }, []);
+  useEffect(() => {
+    if (authState !== 'ok') return;
+    void loadMessages();
+    const timer = window.setInterval(() => void loadMessages(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [authState, loadMessages]);
 
   useEffect(() => {
     document.title = 'FDP Register 3D-map';
@@ -355,7 +404,8 @@ export default function ProjectMap() {
         ctx.arc(p.sx, p.sy, r + 2, 0, Math.PI * 2);
         ctx.stroke();
 
-        const showLabel = n.level <= 1 || n.id === v.hoverId || n.id === v.selectedId || related.has(n.id) || (v.query && matches(n)) || p.scale > 1.15;
+        const badge = v.badges.get(n.id);
+        const showLabel = Boolean(badge) || n.level <= 1 || n.id === v.hoverId || n.id === v.selectedId || related.has(n.id) || (v.query && matches(n)) || p.scale > 1.15;
         if (showLabel) {
           ctx.font = `${n.level === 0 ? 700 : 500} ${Math.round(Math.max(10, Math.min(15, 9 + p.scale * 3)))}px ui-sans-serif, system-ui, sans-serif`;
           ctx.textAlign = 'center';
@@ -364,6 +414,27 @@ export default function ProjectMap() {
           ctx.shadowBlur = 4;
           ctx.fillText(n.name.length > 32 ? `${n.name.slice(0, 31)}…` : n.name, p.sx, p.sy + r + 16);
           ctx.shadowBlur = 0;
+        }
+        if (badge) {
+          // Bolletje met het aantal agentberichten dat op de beheerder wacht.
+          const bx = p.sx + r * 0.8;
+          const by = p.sy - r * 0.8;
+          const br = 8;
+          const pulse = 1 + 0.15 * Math.sin(now / 300);
+          ctx.globalAlpha = Math.max(0.5, alpha);
+          ctx.fillStyle = badge.color;
+          ctx.beginPath();
+          ctx.arc(bx, by, br * pulse, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#07080d';
+          ctx.stroke();
+          ctx.fillStyle = '#07080d';
+          ctx.font = '700 10px ui-sans-serif, system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(badge.count > 9 ? '9+' : String(badge.count), bx, by + 0.5);
+          ctx.textBaseline = 'alphabetic';
         }
         ctx.globalAlpha = 1;
         v.projected.push({ id: n.id, sx: p.sx, sy: p.sy, r: r + 6, depth: p.depth });
@@ -559,13 +630,25 @@ export default function ProjectMap() {
           className="min-w-[10rem] flex-1 rounded-lg border border-white/15 bg-black/40 px-3 py-1.5 text-sm outline-none focus:border-sky-400 sm:max-w-xs"
         />
         <div className="ml-auto flex flex-wrap items-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={() => {
+              if (attention.length === 0) return;
+              const index = attention.findIndex((item) => item.nodeId === selectedId);
+              setSelectedId(attention[(index + 1) % attention.length].nodeId);
+            }}
+            className={`rounded-lg border px-3 py-1.5 font-semibold ${attention.length ? 'border-amber-300/60 bg-amber-300/15 text-amber-200 hover:bg-amber-300/25' : 'border-white/15 text-slate-400'}`}
+            title="Spring naar het volgende onderdeel met agentberichten"
+          >
+            🤖 {attention.length ? `${attention.length} wacht${attention.length === 1 ? '' : 'en'} op jou` : 'Geen nieuwe agentberichten'}
+          </button>
           <button type="button" onClick={() => setAutoRotate((x) => !x)} className="rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10">
             {autoRotate ? 'Stop draaien' : 'Draai'}
           </button>
           <button type="button" onClick={() => zoom(0.8)} className="rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10" aria-label="Inzoomen">＋</button>
           <button type="button" onClick={() => zoom(1.25)} className="rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10" aria-label="Uitzoomen">－</button>
           <button type="button" onClick={resetView} className="rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10">Reset</button>
-          <button type="button" onClick={() => void load(true)} className="rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10">
+          <button type="button" onClick={() => { void load(true); void loadMessages(true); }} className="rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10">
             {loading ? 'Vernieuwen…' : 'Vernieuwen'}
           </button>
           <a href="/" className="rounded-lg border border-white/15 px-3 py-1.5 hover:bg-white/10">Naar de app</a>
@@ -574,6 +657,9 @@ export default function ProjectMap() {
 
       {data?.error && (
         <div className="border-b border-amber-400/30 bg-amber-400/10 px-4 py-2 text-xs text-amber-200">{data.error}</div>
+      )}
+      {messagesError && (
+        <div className="border-b border-amber-400/30 bg-amber-400/10 px-4 py-2 text-xs text-amber-200">{messagesError}</div>
       )}
 
       <div className="relative min-h-0 flex-1">
@@ -616,7 +702,7 @@ export default function ProjectMap() {
         </div>
 
         {selected && (
-          <aside className="absolute bottom-3 right-3 top-auto max-h-[70%] w-[min(22rem,calc(100%-1.5rem))] overflow-y-auto rounded-2xl border border-white/15 bg-[#0d1020]/95 p-4 shadow-2xl backdrop-blur sm:top-3 sm:max-h-none">
+          <aside className="absolute bottom-3 right-3 top-auto max-h-[70%] w-[min(26rem,calc(100%-1.5rem))] overflow-y-auto rounded-2xl border border-white/15 bg-[#0d1020]/95 p-4 shadow-2xl backdrop-blur sm:top-3 sm:max-h-none">
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="text-[11px] uppercase tracking-wide text-slate-400">{selected.type || 'Onderdeel'} · {selected.area}</div>
@@ -664,6 +750,12 @@ export default function ProjectMap() {
                 <div className="flex flex-wrap gap-1.5">{neededBy.map(chip)}</div>
               </div>
             )}
+            <AgentPanel
+              nodeId={selected.id}
+              isRoot={selected.id === rootId}
+              messages={messagesByNode.get(selected.id) || []}
+              onChanged={() => loadMessages(true)}
+            />
           </aside>
         )}
       </div>
