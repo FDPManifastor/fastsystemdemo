@@ -6,6 +6,7 @@ import { createServer as createViteServer } from "vite";
 import { createStorage, type NewFile, type Order } from "./storage";
 import { createCatalog } from "./catalog";
 import { createProjectMap } from "./projectMap";
+import { AGENT_ACTIONS, createAgentMessages } from "./agentMessages";
 import { calculateTshirtPrice, parseTshirtDesigns, parseTshirtSpec, printsFromDesigns } from "./src/utils/tshirtPricing";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -19,6 +20,7 @@ const AUTH_RATE_LIMIT_MAX_REQUESTS = 20;
 const storage = createStorage();
 const catalog = createCatalog(storage);
 const projectMap = createProjectMap();
+const agentMessages = createAgentMessages();
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
 function getClientIp(req: express.Request) {
@@ -668,6 +670,38 @@ async function startServer() {
   app.get("/api/admin/map", requireAdmin, asyncRoute(async (req, res) => {
     res.setHeader("Cache-Control", "private, no-store");
     return res.json(await projectMap.get(req.query.refresh === "1"));
+  }));
+
+  // Agent-berichten (Notion) voor de 3D-map: lezen, goedkeuren/afwijzen en reageren.
+  const NOTION_PAGE_ID = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
+  app.get("/api/admin/map/messages", requireAdmin, asyncRoute(async (req, res) => {
+    res.setHeader("Cache-Control", "private, no-store");
+    return res.json(await agentMessages.list(req.query.refresh === "1"));
+  }));
+  app.post("/api/admin/map/messages/:id/status", requireAdmin, asyncRoute(async (req, res) => {
+    const id = String(req.params.id || "");
+    const action = String(req.body?.action || "");
+    if (!NOTION_PAGE_ID.test(id) || !AGENT_ACTIONS[action]) return res.status(400).json({ error: "Ongeldig verzoek." });
+    try {
+      return res.json({ ok: true, message: await agentMessages.setStatus(id, action) });
+    } catch (error) {
+      return res.status(409).json({ error: error instanceof Error ? error.message : "Bijwerken mislukt." });
+    }
+  }));
+  app.post("/api/admin/map/messages", requireAdmin, asyncRoute(async (req, res) => {
+    const body = req.body || {};
+    const text = String(body.text || "").trim().slice(0, 1900);
+    const nodeId = body.nodeId && NOTION_PAGE_ID.test(String(body.nodeId)) ? String(body.nodeId) : null;
+    const replyTo = body.replyTo && NOTION_PAGE_ID.test(String(body.replyTo)) ? String(body.replyTo) : null;
+    const kind = body.kind === "Idee" ? "Idee" : "Reactie";
+    if (!text) return res.status(400).json({ error: "Schrijf eerst een tekst." });
+    if (kind === "Reactie" && !replyTo) return res.status(400).json({ error: "Een reactie hoort bij een bericht." });
+    const title = String(body.title || "").trim() || (kind === "Idee" ? text.split(/[.\n]/)[0] : `Reactie: ${text}`).slice(0, 80);
+    try {
+      return res.json({ ok: true, message: await agentMessages.create({ nodeId, replyTo, title, text, kind }) });
+    } catch (error) {
+      return res.status(502).json({ error: error instanceof Error ? error.message : "Opslaan mislukt." });
+    }
   }));
 
   // Taakstatussen en eigen ideeën voor de overzichtskaart (/map).
