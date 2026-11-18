@@ -18,11 +18,12 @@ export type AgentMessage = {
 };
 
 export const AGENT_COLORS: Record<string, string> = {
-  Beveiliging: '#f87171',
-  Snelheid: '#fb923c',
-  Balie: '#60a5fa',
-  'Klant & omzet': '#4ade80',
-  Reviewer: '#c084fc',
+  Opdrachtbon: '#38bdf8',
+  'FD Werkplaats': '#a78bfa',
+  Klantpagina: '#f472b6',
+  'Pre-press & Imposition': '#fb923c',
+  'Techniek & veiligheid': '#f87171',
+  Reviewer: '#cbd5e1',
   Uitvoerder: '#d6a77a',
   Beheerder: '#e5e7eb',
 };
