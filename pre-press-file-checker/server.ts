@@ -6,6 +6,7 @@ import { createServer as createViteServer } from "vite";
 import { createStorage, type NewFile, type Order } from "./storage";
 import { createCatalog } from "./catalog";
 import { createProjectMap } from "./projectMap";
+import { detectSize, parseWeborderEmail } from "./weborder";
 import { calculateTshirtPrice, parseTshirtDesigns, parseTshirtSpec, printsFromDesigns } from "./src/utils/tshirtPricing";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -276,6 +277,95 @@ async function startServer() {
   app.use(express.json({ limit: "20mb" }));
   app.use(express.urlencoded({ limit: "32kb", extended: true }));
   app.use("/api", rateLimit(RATE_LIMIT_MAX_REQUESTS));
+
+  // Webshopbestellingen uit n8n. Staat vóór de same-origin-check omdat n8n geen browser is;
+  // beveiligd met de geheime sleutel WEBORDER_API_KEY (header "x-fdp-key").
+  app.post("/api/integrations/weborders", asyncRoute(async (req, res) => {
+    const expectedKey = (process.env.WEBORDER_API_KEY || "").trim();
+    if (expectedKey.length < 24) return res.status(503).json({ error: "WEBORDER_API_KEY is niet ingesteld op de server." });
+    const submittedKey = String(req.get("x-fdp-key") || "").trim();
+    if (!submittedKey || !safeCompare(submittedKey, expectedKey)) return res.status(401).json({ error: "Not authorized." });
+
+    const branch = typeof req.body?.branch === "string" ? req.body.branch.trim() : "";
+    if (!isBranch(branch)) return res.status(400).json({ error: `Onbekend filiaal. Gebruik ${BRANCHES.join(", ")}.` });
+
+    const parsed = parseWeborderEmail(String(req.body?.html || ""), String(req.body?.subject || ""));
+    if (!parsed || parsed.lines.length === 0) {
+      return res.status(422).json({ error: "Dit lijkt geen webshopbestelling; er is geen opdracht aangemaakt." });
+    }
+
+    // Dezelfde webshopbestelling nooit twee keer als opdracht.
+    const dedupeKey = `weborder:${parsed.orderNumber}`;
+    const existingId = await storage.getMeta(dedupeKey);
+    if (existingId && (await storage.getOrder(existingId))) {
+      return res.status(200).json({ success: true, duplicate: true, orderId: existingId, branch });
+    }
+
+    const replyTo = typeof req.body?.replyTo === "string" ? req.body.replyTo.trim().toLowerCase() : "";
+    const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parsed.clientEmail) ? parsed.clientEmail
+      : /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(replyTo) ? replyTo : "";
+    const pickup = /ophalen|afhalen/i.test(parsed.shipping);
+    const urgent = /ultraspoed|spoed/i.test(parsed.shipping);
+    const unknownSizes: string[] = [];
+    const products = parsed.lines.slice(0, 100).map((line) => {
+      const description = [line.name, line.options.join(", ")].filter(Boolean).join(" — ").slice(0, 2000);
+      const size = detectSize(`${line.name} ${line.options.join(" ")}`);
+      if (!size) unknownSizes.push(line.name);
+      return {
+        description,
+        productId: "webshop",
+        category: "Webshop",
+        widthMm: size ? size[0] : 210,
+        heightMm: size ? size[1] : 297,
+        printSides: "single",
+        quantity: line.quantity,
+        unitPrice: Math.round((line.total / line.quantity) * 100) / 100,
+        vatIncluded: true,
+        fixedTotal: line.total,
+        priceSource: `Webshop #${parsed.orderNumber}`,
+      };
+    });
+    const total = parsed.total || products.reduce((sum, product) => sum + product.fixedTotal, 0);
+    const vat = Math.min(parsed.vat, total);
+    const internal = [
+      `Webshopbestelling #${parsed.orderNumber}, automatisch aangemaakt via n8n.`,
+      parsed.shipping && `Verzending: ${parsed.shipping}.`,
+      parsed.paymentMethod && `Betaalmethode: ${parsed.paymentMethod}${parsed.paid ? " (betaald)" : ""}.`,
+      unknownSizes.length && `Formaat niet gevonden voor ${unknownSizes.join(", ")}: A4 ingevuld, controleer dit.`,
+      parsed.adminUrl && `WooCommerce: ${parsed.adminUrl}`,
+    ].filter(Boolean).join(" ");
+
+    const created = await createOrder({
+      clientName: (parsed.company ? `${parsed.clientName} (${parsed.company})` : parsed.clientName).slice(0, 200),
+      clientEmail: email,
+      clientPhone: parsed.clientPhone.slice(0, 2000),
+      order_type: "opdrachtbon",
+      order_number: `WEB-${parsed.orderNumber}`,
+      contact_person: parsed.clientName.slice(0, 2000),
+      client_address: parsed.address.slice(0, 2000),
+      client_postcode_city: parsed.postcodeCity.slice(0, 2000),
+      delivery_method: pickup ? "Afhalen" : "Bezorgen",
+      delivery_address: (pickup ? "" : parsed.shippingAddress || [parsed.address, parsed.postcodeCity].filter(Boolean).join(", ")).slice(0, 2000),
+      assisted_by: "Webshop",
+      order_status: "Nieuw",
+      payment_status: parsed.paid ? "Volledig betaald" : "Niet betaald",
+      products_json: JSON.stringify(products),
+      subtotal: Math.round((total - vat) * 100) / 100,
+      vat,
+      grand_total: total,
+      prepayment: parsed.paid ? total : 0,
+      remaining: parsed.paid ? 0 : total,
+      customer_approved: true,
+      notes: [urgent ? "ULTRASPOED" : "", parsed.customerNote].filter(Boolean).join(" · ").slice(0, 2000),
+      internal_notes: internal.slice(0, 2000),
+    }, undefined, true, branch, { addFiles: [], fields: { source: "webshop", webshopOrderNumber: parsed.orderNumber } });
+    if (!created) return res.status(400).json({ error: "De bestelling kon niet als opdracht worden opgeslagen." });
+
+    await storage.setMeta(dedupeKey, created.order.id);
+    console.log(`[weborders] Webshop #${parsed.orderNumber} -> ${created.order.id} (${branch})`);
+    return res.status(201).json({ success: true, orderId: created.order.id, orderNumber: `WEB-${parsed.orderNumber}`, branch });
+  }));
+
   app.use("/api", requireSameOrigin);
 
   const publicOrderFields = [
