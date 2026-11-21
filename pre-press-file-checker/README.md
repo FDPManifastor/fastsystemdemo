@@ -49,6 +49,15 @@ De opdrachtbon zoekt tijdens het typen in de productendatabase van FDPBRAIN (Not
 
 De sticker- en bannercalculator (`src/utils/pricing.ts`) gebruikt dezelfde tarieven als de "Printcalculatoren" in FDPBRAIN → Calculators. Wijzigen de tarieven daar, pas ze dan ook in dat bestand aan.
 
+## Webshopbestellingen uit n8n (`POST /api/integrations/weborders`)
+
+De n8n-workflow "Mail Agent FD Weborders" sorteert de WooCommerce-bestelmails per filiaal. Na het doorsturen naar het filiaal stuurt n8n de mail ook naar FD Werkplaats, waar hij meteen een opdracht wordt bij dat filiaal (bonnummer `WEB-<webshopnummer>`, medewerker "Webshop").
+
+- `WEBORDER_API_KEY`: geheime sleutel (minimaal 24 tekens, bv. `openssl rand -hex 32`). Zet hem als secret op Render en in n8n als header `x-fdp-key`.
+- Body (JSON): `branch` (`Amsterdam`, `Utrecht` of `Hoogvliet`), `subject`, `html` (de bestelmail) en optioneel `replyTo` (e-mail van de klant).
+- De server leest uit de mail: ordernummer, klant, adres, producten met opties en prijs, totaal en btw, verzending (Ophalen = Afhalen, anders Bezorgen; Ultraspoed komt in de opmerking) en of er betaald is. Formaten A0–A7 of "50x70 cm" worden herkend; anders staat A4 ingevuld met een interne notitie om het te controleren.
+- Dezelfde webshopbestelling wordt nooit twee keer aangemaakt. Mails die geen bestelling zijn krijgen `422` en maken niets aan.
+
 ## Secure Deployment
 
 Configure these environment variables in the hosting service. Never commit the admin password or put it in frontend code.
@@ -57,6 +66,7 @@ Configure these environment variables in the hosting service. Never commit the a
 - `ADMIN_PASSWORD`: generate a unique secret with `openssl rand -base64 32` and store it as a Render secret.
 - `PUBLIC_APP_ORIGIN`: the exact public origin, for example `https://your-service.onrender.com`.
 - `NODE_ENV`: `production`.
+- `WEBORDER_API_KEY`: sleutel voor webshopbestellingen uit n8n (zie hierboven).
 
 For Render, use `npm ci && npm run build` as the build command and `npm start` as the start command. Render provides `PORT` automatically.
 
