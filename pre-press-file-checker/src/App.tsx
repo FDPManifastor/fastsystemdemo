@@ -47,7 +47,7 @@ import LiveFilePreview from './components/LiveFilePreview';
 import { FDLogo } from './components/FDLogo';
 import { renderPdfFile } from './utils/pdfLoader';
 // Zware onderdelen worden pas geladen als ze nodig zijn, zodat de eerste pagina sneller opent.
-import { CustomerFilesBox, PrintReadyBox, HelpRequestBox, ExtraSpecBox, MyHelpBanner, ProgressMini, ProgressPanel, WhoBadge } from './components/OrderExtras';
+import { CustomerFilesBox, PrintReadyBox, HelpRequestBox, ExtraSpecBox, MyHelpBanner, ProgressMini, ProgressPanel, WhoBadge, WorkTaskBox } from './components/OrderExtras';
 const OrderTicketWorkspace = lazy(() => import('./components/OrderTicketWorkspace'));
 import { saveOrderToComputer } from './utils/saveOrderFolder';
 import { BRANCH_DETAILS } from './utils/branches';
@@ -228,11 +228,24 @@ export default function App() {
   const [savingOrderId, setSavingOrderId] = useState<string | null>(null);
   const NEXT_STATUS: Record<string, { to: string; label: string }> = {
     Ingediend: { to: 'In Controle', label: 'Start controle' },
+    'Bestanden Ontvangen': { to: 'In Controle', label: 'Start controle' },
     'In Controle': { to: 'Preflight Goedgekeurd', label: 'Bestand goedkeuren' },
     'Actie Vereist': { to: 'In Controle', label: 'Opnieuw controleren' },
     'Preflight Goedgekeurd': { to: 'In Druk', label: 'Naar de druk' },
     'In Druk': { to: 'Klaar voor Afhalen', label: 'Klaar voor afhalen' },
-    'Klaar voor Afhalen': { to: 'Verzonden', label: 'Afgehaald / verzonden' },
+  };
+  /** Opdracht afronden: gaat uit "Lopend" en naar de lijst "Afgerond". Los van "Werk gedaan". */
+  const completeOrder = async (order: any) => {
+    const warnings: string[] = [];
+    if (!order.workDone) warnings.push('- het werk staat nog niet op "Gedaan"');
+    if (orderOwed(order) > 0) warnings.push(`- er staat nog € ${orderOwed(order).toFixed(2).replace('.', ',')} open`);
+    const question = `Opdracht ${order.order_number || order.id} (${order.clientName || 'klant'}) afronden?\n\nDe opdracht verdwijnt uit de lopende lijst en komt bij "Afgerond".${warnings.length ? `\n\nLet op:\n${warnings.join('\n')}` : ''}`;
+    if (!window.confirm(question)) return;
+    await putOrder(order.id, { status: 'Verzonden', note: 'Uw opdracht is afgerond. Bedankt!' });
+  };
+  const reopenOrder = async (order: any) => {
+    if (!window.confirm(`Opdracht ${order.order_number || order.id} weer openzetten? Hij komt terug in de lopende lijst.`)) return;
+    await putOrder(order.id, { status: 'Klaar voor Afhalen', note: 'Opdracht is heropend.' });
   };
   const urgencyBorder = (o: any) => {
     const status = String(o.status || 'Ingediend');
@@ -338,12 +351,12 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
     if (view === 'alle') return true;
     if (view === 'afgerond') return status === 'Verzonden';
     if (view === 'lopend') return status !== 'Verzonden';
-    if (view === 'actie') return status !== 'Verzonden' && (status === 'Actie Vereist' || status === 'Ingediend' || !o.assignedStaff);
+    if (view === 'actie') return status !== 'Verzonden' && (status === 'Actie Vereist' || status === 'Ingediend' || status === 'Bestanden Ontvangen' || !o.assignedStaff);
     if (view === 'klaar') return status === 'Klaar voor Afhalen';
     return orderOwed(o) > 0;
   };
   const orderUrgency = (o: any) => {
-    const rank: Record<string, number> = { 'Actie Vereist': 0, Ingediend: 1, 'In Controle': 2, 'Preflight Goedgekeurd': 3, 'In Druk': 4, 'Klaar voor Afhalen': 5, Verzonden: 9 };
+    const rank: Record<string, number> = { 'Actie Vereist': 0, Ingediend: 1, 'Bestanden Ontvangen': 1, 'In Controle': 2, 'Preflight Goedgekeurd': 3, 'In Druk': 4, 'Klaar voor Afhalen': 5, Verzonden: 9 };
     return rank[orderStatusOf(o)] ?? 6;
   };
   const [sessionPerms, setSessionPerms] = useState<string[]>([]);
@@ -3906,16 +3919,14 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                                   {sessionRole === 'branch' && (order.branch || 'Amsterdam') !== sessionBranch ? ' · gedeeld' : ''}
                                   {Array.isArray(order.sharedWith) && order.sharedWith.length > 0 ? ` → ${order.sharedWith.join(', ')}` : ''}
                                 </span>
-                                <div className="min-w-0">
-                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                                    <span className="truncate text-xs font-extrabold text-slate-800">{order.clientName || 'Klant onbekend'}</span>
-                                    <span className="text-[11px] font-semibold text-slate-600">
-                                      {order.order_type === 'opdrachtbon' && ticketLines.length
-                                        ? ticketLines.map((line) => `${line.quantity}× ${line.description}`).join(', ')
-                                        : `${order.clientQuantity || 100}× ${order.selectedProductName || order.selectedProductCategory || 'Product niet opgegeven'}`}
-                                    </span>
-                                  </div>
-                                  <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1 font-mono">
+                                <div className="min-w-0 space-y-1">
+                                  <h4 className="truncate text-xl font-black leading-tight text-slate-950 sm:text-2xl">{order.clientName || 'Klant onbekend'}</h4>
+                                  <p className="text-base font-bold leading-snug text-slate-800">
+                                    {order.order_type === 'opdrachtbon' && ticketLines.length
+                                      ? ticketLines.map((line) => `${line.quantity}× ${line.description}`).join(', ')
+                                      : `${order.clientQuantity || 100}× ${order.selectedProductName || order.selectedProductCategory || 'Product niet opgegeven'}`}
+                                  </p>
+                                  <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1 font-mono">
                                     <Clock className="w-3 h-3 text-slate-400" />
                                     {formattedDate}
                                   </span>
@@ -3924,33 +3935,40 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                               </div>
 
                               <div className="flex items-center gap-2">
-                                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border ${
-                                  order.printSides === 'double'
-                                    ? 'bg-rose-50 text-rose-800 border-rose-200'
-                                    : 'bg-slate-50 text-slate-600 border-slate-200'
-                                }`}>
-                                  {order.printSides === 'double' ? '↕ DUBBELZIJDIG' : '↑ ENKELZIJDIG'}
-                                </span>
+                                {(() => {
+                                  const sides = order.order_type === 'opdrachtbon'
+                                    ? (ticketLines.some((line) => line.printSides === 'double') ? 'double' : ticketLines.some((line) => line.printSides === 'single') ? 'single' : '')
+                                    : (order.printSides || '');
+                                  if (!sides) return null;
+                                  return (
+                                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border ${sides === 'double' ? 'bg-rose-50 text-rose-800 border-rose-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                                      {sides === 'double' ? '↕ DUBBELZIJDIG' : '↑ ENKELZIJDIG'}
+                                    </span>
+                                  );
+                                })()}
 
                                 <span className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-4 text-xs font-bold text-brand-red">
                                   {isOrderExpanded ? 'Inklappen' : 'Alles bekijken'}
                                   <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isOrderExpanded ? 'rotate-180' : ''}`} />
                                 </span>
 
-                                <button
+                                {isOwner && <button
                                   type="button"
                                   onClick={(event) => { event.stopPropagation(); handleDeleteOrder(order.id); }}
                                   className="p-1.5 bg-white border border-slate-200 hover:bg-rose-50 hover:border-rose-200 text-slate-500 hover:text-brand-red rounded-lg transition-colors cursor-pointer"
                                   title="Bestelling Verwijderen"
                                 >
                                   <Trash2 className="w-4 h-4" />
-                                </button>
+                                </button>}
                               </div>
                             </div>
 
+                            {/* Wat moet er gebeuren + knop Gedaan (los van Opdracht afgerond) */}
+                            <WorkTaskBox order={order} me={sessionRole === 'branch' ? currentPerson : ''} canEdit={can('status_wijzigen') && (order.status || 'Ingediend') !== 'Verzonden'} act={(body) => putOrder(order.id, body)} />
+
                             {/* Snelle acties: groot en met één tik */}
                             <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-3 font-sans">
-                              <WhoBadge order={order} me={sessionRole === 'branch' ? currentPerson : ''} canAssign={can('status_wijzigen')} onAssign={(name) => handleAssignStaff(order.id, name)} />
+                              <WhoBadge order={order} me={sessionRole === 'branch' ? currentPerson : ''} canAssign={can('status_wijzigen')} onAssign={(name) => handleAssignStaff(order.id, name)} staff={staffList.filter((m) => !m.branch || m.branch === (order.branch || 'Amsterdam')).map((m) => String(m.name))} />
                               <span className="mr-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-extrabold text-slate-800">{order.status || 'Ingediend'}</span>
                               {NEXT_STATUS[order.status || 'Ingediend'] && can('status_wijzigen') && (
                                 <button
@@ -3978,6 +3996,15 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                               <button type="button" onClick={() => printOrderLabel(order)} className="min-h-[48px] rounded-xl border border-slate-300 bg-white px-4 text-sm font-extrabold text-slate-800 hover:bg-slate-50 active:scale-[0.98]">
                                 🏷 Label printen
                               </button>
+                              {can('status_wijzigen') && ((order.status || 'Ingediend') === 'Verzonden' ? (
+                                <button type="button" onClick={() => reopenOrder(order)} className="ml-auto min-h-[48px] rounded-xl border border-slate-300 bg-white px-4 text-sm font-extrabold text-slate-700 hover:bg-slate-50 active:scale-[0.98]">
+                                  ↺ Heropenen
+                                </button>
+                              ) : (
+                                <button type="button" onClick={() => completeOrder(order)} className="ml-auto min-h-[48px] rounded-xl bg-emerald-600 px-5 text-sm font-black text-white shadow-sm hover:bg-emerald-700 active:scale-[0.98]">
+                                  ✔ Opdracht afgerond
+                                </button>
+                              ))}
                             </div>
 
                             {isOrderExpanded && (
@@ -4579,6 +4606,7 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                                     className="w-full bg-white border border-slate-205 text-xs font-bold text-slate-800 px-2.5 py-1.5 rounded-lg focus:outline-hidden focus:border-blue-500 font-sans"
                                   >
                                     <option value="Ingediend">Ingediend</option>
+                                    <option value="Bestanden Ontvangen">Bestanden Ontvangen</option>
                                     <option value="In Controle">In Controle</option>
                                     <option value="Preflight Goedgekeurd">Preflight Goedgekeurd</option>
                                     <option value="Actie Vereist">Actie Vereist (Rejectie)</option>
@@ -4617,8 +4645,8 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                                   disabled={isUpdatingStatus[order.id]}
                                   onClick={async () => {
                                     const inp = adminStatusInputs[order.id] || { status: order.status || 'Ingediend', note: '' };
-                                    if (!inp.note) {
-                                      alert('Gelieve een korte notitie in te voeren voor de bestelling historieverloop.');
+                                    if (inp.status === (order.status || 'Ingediend') && !(inp.note || '').trim()) {
+                                      alert('Kies een nieuwe status of typ een notitie voor de klant.');
                                       return;
                                     }
 
@@ -4632,7 +4660,8 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                                         credentials: 'include',
                                         body: JSON.stringify({
                                           status: inp.status,
-                                          note: inp.note
+                                          note: (inp.note || '').trim() || undefined,
+                                          actingAs: sessionRole === 'branch' && currentPerson ? currentPerson : undefined
                                         })
                                       });
 
@@ -4649,9 +4678,9 @@ ${order.notes ? `<p class="meta"><b>Opmerking:</b> ${esc(order.notes)}</p>` : ''
                                             note: ''
                                           }
                                         }));
-                                        alert('Bestelling status succesvol bijgewerkt!');
                                       } else {
-                                        alert('Fout bij het bijwerken van de status.');
+                                        const failure = await res.json().catch(() => ({}));
+                                        alert(failure.error || 'Fout bij het bijwerken van de status.');
                                       }
                                     } catch (err) {
                                       console.error(err);

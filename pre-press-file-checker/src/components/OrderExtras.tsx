@@ -24,29 +24,153 @@ const HELP_STATUS: Record<string, { label: string; tone: string }> = {
 
 const btn = 'min-h-[44px] rounded-xl px-4 text-sm font-extrabold active:scale-[0.98] disabled:opacity-50';
 
-/** Grote badge: wie is hiermee bezig? Met één tik "ik pak dit op". */
-export function WhoBadge({ order, me, canAssign, onAssign }: { order: AnyOrder; me: string; canAssign: boolean; onAssign: (name: string) => void }) {
+/** Grote badge: wie is hiermee bezig? Met één tik "ik pak dit op", of kies een collega uit de lijst. */
+export function WhoBadge({ order, me, canAssign, onAssign, staff = [] }: { order: AnyOrder; me: string; canAssign: boolean; onAssign: (name: string) => void; staff?: string[] }) {
+  const names = Array.from(new Set([...staff, ...(order.assignedStaff ? [String(order.assignedStaff)] : [])])).filter(Boolean);
+  const picker = canAssign && names.length > 0 && (
+    <select
+      value={order.assignedStaff || ''}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => { event.stopPropagation(); onAssign(event.target.value); }}
+      aria-label="Kies wie hiermee bezig is"
+      className="ml-1 min-h-[36px] max-w-[150px] cursor-pointer rounded-lg border border-slate-300 bg-white px-2 text-xs font-bold text-slate-800"
+    >
+      <option value="">{order.assignedStaff ? 'Niemand meer' : 'Kies collega…'}</option>
+      {names.map((name) => <option key={name} value={name}>{name}</option>)}
+    </select>
+  );
   if (order.assignedStaff) {
     return (
-      <span className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-3 text-sm font-extrabold text-emerald-900">
+      <span className="inline-flex min-h-[48px] items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-3 text-sm font-extrabold text-emerald-900">
         <span aria-hidden>👤</span> {order.assignedStaff} is bezig
         {canAssign && me && me !== order.assignedStaff && (
           <button type="button" onClick={(event) => { event.stopPropagation(); onAssign(me); }} className="ml-1 rounded-lg border border-emerald-300 bg-white px-2 py-1 text-[11px] font-bold text-emerald-900 hover:bg-emerald-100">
             Overnemen
           </button>
         )}
+        {picker}
       </span>
     );
   }
   return (
-    <span className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 text-sm font-extrabold text-amber-900">
+    <span className="inline-flex min-h-[48px] items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 text-sm font-extrabold text-amber-900">
       <span aria-hidden>⚠</span> Nog niemand bezig
       {canAssign && me && (
         <button type="button" onClick={(event) => { event.stopPropagation(); onAssign(me); }} className="ml-1 rounded-lg bg-amber-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-amber-700">
           Ik pak dit op
         </button>
       )}
+      {picker}
     </span>
+  );
+}
+
+const sidesLabel = (sides?: string) => (sides === 'double' ? 'dubbelzijdig' : sides === 'single' ? 'enkelzijdig' : '');
+
+/** Automatische takenlijst uit de bestelling: producten, formaat, zijden, opmerkingen, levering. */
+export function autoWorkItems(order: AnyOrder): string[] {
+  const items: string[] = [];
+  let lines: any[] = [];
+  if (order.order_type === 'opdrachtbon') {
+    try { const parsed = JSON.parse(order.products_json || '[]'); if (Array.isArray(parsed)) lines = parsed; } catch { lines = []; }
+  }
+  if (lines.length) {
+    for (const line of lines) {
+      const size = line.widthMm && line.heightMm ? `${line.widthMm} × ${line.heightMm} mm` : '';
+      const extra = [size, sidesLabel(line.printSides)].filter(Boolean).join(', ');
+      items.push(`${line.quantity}× ${line.description}${extra ? ` (${extra})` : ''}`);
+      if (line.prepressNote) items.push(`↳ ${line.prepressNote}`);
+    }
+  } else {
+    const size = order.customWidth && order.customHeight ? `${order.customWidth} × ${order.customHeight} mm` : '';
+    const extra = [size, sidesLabel(order.printSides)].filter(Boolean).join(', ');
+    items.push(`${order.clientQuantity || 100}× ${order.selectedProductName || order.selectedProductCategory || 'Product niet opgegeven'}${extra ? ` (${extra})` : ''}`);
+  }
+  if (order.notes) items.push(`Opmerking klant: ${order.notes}`);
+  if (order.extraInfo) items.push(`Extra info: ${order.extraInfo}`);
+  if (order.delivery_method || order.delivery_date) {
+    items.push([order.delivery_method, order.delivery_date ? `uiterlijk ${new Date(`${order.delivery_date}T12:00:00`).toLocaleDateString('nl-NL', { weekday: 'short', day: 'numeric', month: 'short' })}` : ''].filter(Boolean).join(' · '));
+  }
+  return items;
+}
+
+/** Bovenaan elke opdracht: wat moet er gebeuren + knop "Gedaan" (los van "Opdracht afgerond"). */
+export function WorkTaskBox({ order, me, canEdit, act }: { order: AnyOrder; me: string; canEdit: boolean; act: Act }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const done = order.workDone && typeof order.workDone === 'object' ? order.workDone : null;
+  const items = autoWorkItems(order);
+  const custom = String(order.workTask || '').trim();
+
+  const run = async (body: Record<string, unknown>) => {
+    setBusy(true);
+    const ok = await act(body);
+    setBusy(false);
+    return ok;
+  };
+
+  return (
+    <div
+      onClick={(event) => event.stopPropagation()}
+      className={`flex flex-col gap-3 border-b px-4 py-3 sm:flex-row sm:items-start sm:justify-between ${done ? 'border-emerald-100 bg-emerald-50/60' : 'border-amber-100 bg-amber-50/70'}`}
+    >
+      <div className="min-w-0 flex-1">
+        <h5 className={`text-xs font-extrabold uppercase tracking-widest ${done ? 'text-emerald-800' : 'text-amber-900'}`}>
+          {done ? '✓ Werk gedaan' : '🛠 Wat moet er gebeuren'}
+        </h5>
+        <ul className={`mt-1.5 space-y-0.5 text-sm ${done ? 'text-slate-500 line-through decoration-emerald-400' : 'text-slate-900'}`}>
+          {items.map((item, index) => <li key={index} className={item.startsWith('↳') ? 'pl-4 text-xs text-slate-600' : 'font-bold'}>{item.startsWith('↳') ? item : `• ${item}`}</li>)}
+        </ul>
+        {editing ? (
+          <div className="mt-2 space-y-2">
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              maxLength={2000}
+              rows={3}
+              autoFocus
+              placeholder="Bijv. eerst proefdruk laten zien, daarna snijden op 85 × 55 mm"
+              className="w-full rounded-xl border border-slate-300 bg-white p-2 text-sm"
+            />
+            <div className="flex gap-2">
+              <button type="button" disabled={busy} onClick={async () => { if (await run({ workTask: draft })) setEditing(false); }} className={`${btn} bg-slate-900 text-white hover:bg-slate-700`}>Opslaan</button>
+              <button type="button" onClick={() => setEditing(false)} className={`${btn} border border-slate-300 bg-white text-slate-700`}>Annuleren</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {custom && (
+              <p className="mt-2 whitespace-pre-wrap rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900">
+                <span className="mr-1 text-[10px] font-extrabold uppercase tracking-wider text-amber-800">Instructie:</span>{custom}
+              </p>
+            )}
+            {canEdit && !done && (
+              <button type="button" onClick={() => { setDraft(custom); setEditing(true); }} className="mt-2 text-xs font-bold text-slate-600 underline hover:text-slate-900">
+                {custom ? 'Instructie aanpassen' : '+ Eigen instructie toevoegen'}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+      {canEdit && (
+        <div className="flex shrink-0 flex-col items-stretch gap-1 sm:items-end">
+          {done ? (
+            <>
+              <span className="text-xs font-bold text-emerald-800">{[done.by, formatWhen(done.at)].filter(Boolean).join(' · ')}</span>
+              <button type="button" disabled={busy} onClick={() => run({ workDone: false })} className={`${btn} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`}>
+                ↺ Toch nog niet klaar
+              </button>
+            </>
+          ) : (
+            <button type="button" disabled={busy} onClick={() => run({ workDone: true })} className="min-h-[52px] rounded-xl bg-amber-500 px-6 text-base font-black text-white shadow-sm hover:bg-amber-600 active:scale-[0.98] disabled:opacity-50">
+              ✓ Gedaan
+            </button>
+          )}
+          {!me && !done && <span className="text-[10px] text-slate-500">Tip: kies bovenin wie je bent, dan komt je naam erbij.</span>}
+        </div>
+      )}
+    </div>
   );
 }
 
