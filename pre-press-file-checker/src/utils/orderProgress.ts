@@ -59,6 +59,16 @@ export function orderProgress(order: AnyOrder): ProgressStep[] {
     detail: order.status === 'Actie Vereist' ? 'Bestand niet in orde: klant benaderen' : rank < 2 ? 'Bestand controleren op resolutie en formaat' : undefined,
   });
 
+  const workDone = order.workDone && typeof order.workDone === 'object' ? order.workDone : null;
+  steps.push({
+    key: 'werk',
+    label: 'Werk gedaan',
+    done: Boolean(workDone),
+    who: workDone?.by || undefined,
+    when: workDone?.at || undefined,
+    detail: workDone ? undefined : 'Zie "Wat moet er gebeuren" bovenaan de opdracht',
+  });
+
   if (order.order_type === 'opdrachtbon' || order.payment_status) {
     const paid = order.payment_status === 'Volledig betaald';
     const payEntry = lastEntry(order, (item) => /betaald|aanbetaling/i.test(String(item?.note || '')));
@@ -83,7 +93,7 @@ export function orderProgress(order: AnyOrder): ProgressStep[] {
   steps.push({ key: 'klant', label: 'Klant ingelicht', done: Boolean(informed), who: informed?.by, when: informed?.date, detail: informed ? undefined : 'Klant bellen of mailen dat het klaarligt' });
 
   const handed = completedBy(order);
-  steps.push({ key: 'afgehaald', label: 'Afgehaald / verzonden', done: rank >= 5, who: rank >= 5 ? handed.who : undefined, when: rank >= 5 ? handed.when : undefined });
+  steps.push({ key: 'afgehaald', label: 'Opdracht afgerond', done: rank >= 5, who: rank >= 5 ? handed.who : undefined, when: rank >= 5 ? handed.when : undefined });
 
   return steps;
 }

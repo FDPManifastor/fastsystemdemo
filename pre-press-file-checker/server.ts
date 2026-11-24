@@ -1138,13 +1138,15 @@ async function startServer() {
 
   app.put("/api/orders/:id", requireStaffSession, asyncRoute(async (req, res) => {
     const info = res.locals.session as SessionInfo;
-    const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit, logNote, extraInfo, helpRequest, actingAs, prepressCheck } = req.body || {};
+    const { status, note, assignedStaff, payment, sharedWith, moveToBranch, edit, logNote, extraInfo, helpRequest, actingAs, prepressCheck, workTask, workDone } = req.body || {};
     const actor = await resolveActor(info, actingAs);
     const current = await storage.getOrder(req.params.id);
     if (!current || !canSeeOrder(current, info)) return res.status(404).json({ error: "Order not found." });
     if ((edit !== undefined || sharedWith !== undefined || moveToBranch !== undefined) && !hasPerm(info, "bon_aanpassen")) return denyPerm(res);
     if (payment !== undefined && !hasPerm(info, "betaling")) return denyPerm(res);
-    if ((status !== undefined || note !== undefined || assignedStaff !== undefined || logNote !== undefined || extraInfo !== undefined || helpRequest !== undefined) && !hasPerm(info, "status_wijzigen")) return denyPerm(res);
+    if ((status !== undefined || note !== undefined || assignedStaff !== undefined || logNote !== undefined || extraInfo !== undefined || helpRequest !== undefined || workTask !== undefined || workDone !== undefined) && !hasPerm(info, "status_wijzigen")) return denyPerm(res);
+    if (workTask !== undefined && (typeof workTask !== "string" || workTask.length > 2000)) return res.status(400).json({ error: "De werkopdracht is te lang (maximaal 2000 tekens)." });
+    if (workDone !== undefined && typeof workDone !== "boolean") return res.status(400).json({ error: "Ongeldige waarde voor 'gedaan'." });
     if (extraInfo !== undefined && (typeof extraInfo !== "string" || extraInfo.length > 3000)) return res.status(400).json({ error: "De extra info is te lang (maximaal 3000 tekens)." });
     if (logNote !== undefined && (typeof logNote !== "string" || logNote.length > 500)) return res.status(400).json({ error: "Invalid note." });
     if ((sharedWith !== undefined || moveToBranch !== undefined || edit !== undefined) && !canManageOrder(current, info)) {
@@ -1297,6 +1299,17 @@ async function startServer() {
 
       if (typeof logNote === "string" && logNote.trim()) {
         order.history.push({ date: new Date().toISOString(), status: order.status || "Ingediend", note: logNote.trim(), internal: true });
+      }
+
+      // Werkopdracht: wat er gedaan moet worden, met een eigen "gedaan"-vinkje (los van "opdracht afgerond").
+      if (typeof workTask === "string") {
+        (order as any).workTask = workTask.trim();
+        order.history.push({ date: new Date().toISOString(), status: order.status || "Ingediend", note: workTask.trim() ? "Werkopdracht aangepast." : "Eigen werkopdracht verwijderd (automatische tekst wordt gebruikt).", internal: true });
+      }
+      if (typeof workDone === "boolean") {
+        const now = new Date().toISOString();
+        (order as any).workDone = workDone ? { by: actor || undefined, at: now } : null;
+        order.history.push({ date: now, status: order.status || "Ingediend", note: workDone ? "Werk gedaan." : "Werk teruggezet naar 'nog te doen'.", internal: true });
       }
 
       if (typeof extraInfo === "string") {
